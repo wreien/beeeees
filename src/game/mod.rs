@@ -16,7 +16,7 @@
 //! Any moves which do not specify a valid target are ignored.
 //!
 //! The game never finishes.
-//! In theory, as long as input is provided, a game could run forever. 
+//! In theory, as long as input is provided, a game could run forever.
 //! However, a driver may wish to set a "finish" point,
 //! for example a certain number of ticks.
 //! However, this is up to the driver to decide and implement.
@@ -24,10 +24,12 @@
 mod entity;
 pub mod world;
 
+use std::ops::RangeInclusive;
+
 use anyhow::{Context, Result};
 use global_counter::primitive::exact::CounterU64;
 use rand::prelude::*;
-use std::ops::RangeInclusive;
+use serde::{Deserialize, Serialize};
 
 use entity::{Bee, Bird, Car, Flower, Hive};
 pub use entity::{BeeID, Moves};
@@ -35,7 +37,8 @@ pub use entity::{BeeID, Moves};
 use self::world::Position;
 
 /// Uniquely identifies a player.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct Player(u64);
 
 impl Player {
@@ -78,17 +81,30 @@ impl Default for Config {
 }
 
 /// The current game state.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct State {
+    /// The tile map.
     world: world::World,
+
+    /// Configuration for parameters and chances.
+    #[serde(skip)]
     config: Config,
+    /// Available spawn points remaining.
+    #[serde(skip)]
     spawn_points: Vec<Position>,
+    /// This state's random number generator.
+    #[serde(skip)]
     rng: StdRng,
 
+    /// The currently living bees.
     bees: Vec<Bee>,
+    /// The active player hives.
     hives: Vec<Hive>,
+    /// The currently living flowers.
     flowers: Vec<Flower>,
+    /// All birds in the game.
     birds: Vec<Bird>,
+    /// All cars in the game.
     cars: Vec<Car>,
 }
 

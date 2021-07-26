@@ -1,14 +1,17 @@
 //! Types used to describe the game world.
 
+use std::{convert::TryFrom, iter::from_fn, ops::Index};
+
+use anyhow::{bail, Context, Error};
 use rand::{distributions::WeightedIndex, prelude::*};
-use std::{iter::from_fn, ops::Index};
+use serde::{Deserialize, Serialize};
 
 use super::{entity::Flower, Config};
 
 /// Represents the cardinal directions on the plane.
 ///
 /// See also [`World`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum Direction {
     North,
     East,
@@ -17,7 +20,7 @@ pub enum Direction {
 }
 
 /// A position on the [`World`] grid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
     /// The horizontal position; 0 is closest to the left.
     pub x: i32,
@@ -47,7 +50,7 @@ impl Position {
 /// Different kinds of tiles on the map.
 ///
 /// These are unchanging and constant throughout the duration of a game.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum Tile {
     /// Normal terroritory. Can spawn flowers.
     Grass,
@@ -91,7 +94,8 @@ impl Tile {
 }
 
 /// Stores the world map for the game.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(try_from = "WorldDeserializer")]
 pub struct World {
     /// The width of the map, in number of tiles.
     pub width: i32,
@@ -100,6 +104,7 @@ pub struct World {
     /// The contents of the map. Row-major, with the first cell at the bottom-left.
     map: Vec<Tile>,
     /// Cache the spawn weights of each tile.
+    #[serde(skip_serializing)]
     weights: WeightedIndex<f64>,
 }
 
@@ -117,22 +122,37 @@ impl World {
     /// The `map` must be a row-major set of tiles, of size `width` by `height`.
     /// The first element is the bottom-left corner of the world, i.e. index `(0, 0)`.
     ///
-    /// # Panics
+    /// # Errors
     ///
     /// `width` and `height` must be positive integers,
     /// such that `width * height == map.len()`.
+    /// There must also be some tiles that can be used to spawn flowers.
+    ///
+    /// # TODO
+    ///
+    /// More error checking for bad game maps (e.g. no spawn points)
     #[must_use]
-    pub fn new(width: i32, height: i32, map: Vec<Tile>) -> Self {
-        assert!(width > 0 && height > 0);
-        assert!(map.len() == width.checked_mul(height).unwrap() as usize);
+    pub fn new(width: i32, height: i32, map: Vec<Tile>) -> Result<Self, Error> {
+        if width <= 0 || height <= 0 {
+            bail!("dims ({}, {}) are not both >= 0", width, height);
+        }
+
+        let expected_dim = (width as usize)
+            .checked_mul(height as usize)
+            .with_context(|| format!("dims ({}, {}) overflow usize", width, height))?;
+        if map.len() != expected_dim {
+            bail!("dims ({}, {}) != map length ({})", width, height, map.len());
+        }
+
         let weights = map.iter().copied().map(Tile::spawn_weight);
-        let weights = WeightedIndex::new(weights).unwrap();
-        Self {
+        let weights = WeightedIndex::new(weights).context("couldn't create map weightings")?;
+
+        Ok(Self {
             width,
             height,
             map,
             weights,
-        }
+        })
     }
 
     /// Convert a position into an index
@@ -140,7 +160,7 @@ impl World {
     fn pos_to_index(&self, pos: Position) -> usize {
         assert!(pos.x >= 0 && pos.x < self.width);
         assert!(pos.y >= 0 && pos.y < self.height);
-        (pos.x + self.width * pos.y) as usize
+        pos.x as usize + self.width as usize * pos.y as usize
     }
 
     /// Convert an index into a position
@@ -205,5 +225,21 @@ impl World {
             .enumerate()
             .filter_map(|(index, tile)| tile.is_spawn_point().then(|| self.index_to_pos(index)))
             .collect()
+    }
+}
+
+#[derive(Deserialize)]
+struct WorldDeserializer {
+    width: i32,
+    height: i32,
+    map: Vec<Tile>,
+}
+
+impl TryFrom<WorldDeserializer> for World {
+    type Error = Error;
+    fn try_from(
+        WorldDeserializer { width, height, map }: WorldDeserializer,
+    ) -> Result<Self, Self::Error> {
+        World::new(width, height, map)
     }
 }
