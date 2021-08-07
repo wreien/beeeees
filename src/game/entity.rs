@@ -147,7 +147,6 @@ impl Hive {
     /// Spawn a new hive at the given position.
     ///
     /// Returns a hive and any initial bees to be constructed at the hive.
-    #[must_use]
     pub fn new(player: Player, position: Position) -> (Self, impl Iterator<Item = Bee>) {
         (
             Hive {

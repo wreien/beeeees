@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 use entity::{Bee, Bird, Car, Flower, Hive};
 pub use entity::{BeeID, Moves};
 
-use self::world::Position;
+use self::world::{Position, World};
 
 /// Uniquely identifies a player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -84,7 +84,7 @@ impl Default for Config {
 #[derive(Debug, Serialize)]
 pub struct State {
     /// The tile map.
-    world: world::World,
+    world: World,
 
     /// Configuration for parameters and chances.
     #[serde(skip)]
@@ -111,7 +111,7 @@ pub struct State {
 impl State {
     /// Create a new game.
     #[must_use]
-    pub fn new(world: world::World, config: Config) -> State {
+    pub fn new(world: World, config: Config) -> State {
         let spawn_points = world.get_spawn_points();
         let rng = StdRng::from_entropy();
 

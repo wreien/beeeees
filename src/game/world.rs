@@ -131,7 +131,6 @@ impl World {
     /// # TODO
     ///
     /// More error checking for bad game maps (e.g. no spawn points)
-    #[must_use]
     pub fn new(width: i32, height: i32, map: Vec<Tile>) -> Result<Self, Error> {
         if width <= 0 || height <= 0 {
             bail!("dims ({}, {}) are not both >= 0", width, height);
@@ -185,7 +184,6 @@ impl World {
     /// Get a random position to spawn a new flower in.
     ///
     /// Will not spawn a flower in any of the positions of existing `flowers`.
-    #[must_use]
     pub(super) fn spawn_flowers<'a, R: Rng + ?Sized>(
         &'a self,
         rng: &'a mut R,
