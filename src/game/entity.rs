@@ -45,7 +45,7 @@ pub type Moves = HashMap<(Player, BeeID), Direction>;
 
 /// A bee controlled by a player. Moves around the map and collects pollen
 /// at the player's direction.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Bee {
     /// Uniquely identifies the bee.
     pub id: BeeID,
@@ -132,7 +132,7 @@ impl Bee {
 /// A player's hive. Each player will have exactly one hive.
 ///
 /// Also tracks unique per-player information.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Hive {
     /// The player owning this hive.
     pub player: Player,
@@ -188,7 +188,7 @@ impl Hive {
 /// When it runs out of pollen, the flower "dies".
 /// If the flower was previously pollinated when it dies,
 /// it will spawn a new flower nearby.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Flower {
     /// The location of the flower on the map.
     pub position: Position,
@@ -211,7 +211,7 @@ impl Flower {
 }
 
 /// A bird that flies around and eats any bees it passes.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Bird {
     pub position: Position,
 }
@@ -223,7 +223,7 @@ impl Bird {
 }
 
 /// A car that drives around on roads, killing any bees it crosses over.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Car {
     pub position: Position,
     pub facing: Direction,

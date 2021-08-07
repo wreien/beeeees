@@ -24,7 +24,7 @@
 mod entity;
 pub mod world;
 
-use std::ops::RangeInclusive;
+use std::{ops::RangeInclusive, sync::Arc};
 
 use anyhow::{Context, Result};
 use global_counter::primitive::exact::CounterU64;
@@ -80,22 +80,9 @@ impl Default for Config {
     }
 }
 
-/// The current game state.
-#[derive(Debug, Serialize)]
-pub struct State {
-    /// The tile map.
-    world: World,
-
-    /// Configuration for parameters and chances.
-    #[serde(skip)]
-    config: Config,
-    /// Available spawn points remaining.
-    #[serde(skip)]
-    spawn_points: Vec<Position>,
-    /// This state's random number generator.
-    #[serde(skip)]
-    rng: StdRng,
-
+/// Manage mutable entities in the game.
+#[derive(Debug, Clone, Serialize)]
+struct Entities {
     /// The currently living bees.
     bees: Vec<Bee>,
     /// The active player hives.
@@ -108,20 +95,15 @@ pub struct State {
     cars: Vec<Car>,
 }
 
-impl State {
-    /// Create a new game.
+impl Entities {
+    /// Create the set of entities for the game with given world.
+    ///
+    /// # TODO
+    ///
+    /// Do more than just "create nothing"; in particular, should create birds and cars.
     #[must_use]
-    pub fn new(world: World, config: Config) -> State {
-        let spawn_points = world.get_spawn_points();
-        let rng = StdRng::from_entropy();
-
-        // TODO: generate a bunch of entities to start with
-
-        State {
-            world,
-            config,
-            spawn_points,
-            rng,
+    fn new<R: Rng + ?Sized>(_rng: &mut R, _world: &World) -> Self {
+        Entities {
             bees: Vec::new(),
             hives: Vec::new(),
             flowers: Vec::new(),
@@ -130,48 +112,23 @@ impl State {
         }
     }
 
-    /// View the state's world information.
-    #[must_use]
-    pub fn world(&self) -> &world::World {
-        &self.world
-    }
-
-    /// Get the current score of pollen collected.
-    #[must_use]
-    pub fn total_score(&self) -> i32 {
-        self.hives.iter().map(Hive::score).sum()
-    }
-
-    /// Add a player to the game, starting them with a hive and some bees.
-    ///
-    /// # Errors
-    ///
-    /// May fail if there are no more available spawn points.
-    pub fn add_player(&mut self, player: Player) -> Result<()> {
-        let position = self
-            .spawn_points
-            .pop()
-            .context("Could not add player: no more available spawn points")?;
-        let (hive, bees) = Hive::new(player, position);
-        self.hives.push(hive);
-        self.bees.extend(bees);
-        Ok(())
-    }
-
-    /// Perform one game tick. User input is taken in `moves`.
-    pub fn tick(&mut self, moves: &Moves) {
-        let rng = &mut self.rng;
-        let config = &self.config;
-
+    /// Perform one game tick. See also [`State::tick`].
+    fn tick<R: Rng + ?Sized>(
+        &mut self,
+        config: &Config,
+        rng: &mut R,
+        world: &World,
+        moves: &Moves,
+    ) {
         // move animated entities
         for bee in &mut self.bees {
-            bee.step(moves, &self.world);
+            bee.step(moves, world);
         }
         for bird in &mut self.birds {
-            bird.step(&self.world);
+            bird.step(world);
         }
         for car in &mut self.cars {
-            car.step(&self.world);
+            car.step(world);
         }
 
         // bees on their own hives transfer pollen and increase score
@@ -190,7 +147,7 @@ impl State {
         }
 
         // spawn new flowers with small chance each turn
-        let new_flowers = self.world.spawn_flowers(rng, config, &self.flowers);
+        let new_flowers = world.spawn_flowers(rng, config, &self.flowers);
         self.flowers.extend(new_flowers);
 
         // clean out any dead flowers
@@ -200,5 +157,125 @@ impl State {
         // each hive has a small chance of creating a new bee
         let new_bees = self.hives.iter().filter_map(|h| h.spawn_bee(rng, config));
         self.bees.extend(new_bees);
+    }
+}
+
+/// The current game state.
+#[derive(Debug)]
+pub struct State {
+    /// The tile map.
+    world: World,
+
+    /// Configuration for parameters and chances.
+    config: Config,
+    /// Available spawn points remaining.
+    spawn_points: Vec<Position>,
+    /// This state's random number generator.
+    rng: StdRng,
+
+    /// The current entities alive in the game.
+    entities: Entities,
+}
+
+impl State {
+    /// Create a new game.
+    #[must_use]
+    pub fn new(world: World, config: Config) -> State {
+        let spawn_points = world.get_spawn_points();
+        let mut rng = StdRng::from_entropy();
+
+        // TODO: generate a bunch of entities to start with
+        let entities = Entities::new(&mut rng, &world);
+
+        State {
+            world,
+            config,
+            spawn_points,
+            rng,
+            entities,
+        }
+    }
+
+    /// View the state's world information.
+    #[must_use]
+    pub fn world(&self) -> &world::World {
+        &self.world
+    }
+
+    /// Get the current score of pollen collected.
+    #[must_use]
+    pub fn total_score(&self) -> i32 {
+        self.entities.hives.iter().map(Hive::score).sum()
+    }
+
+    /// Get an independent serialisable view of the current state of the game.
+    ///
+    /// The returned serializer only represents
+    /// the mutable members of the game.
+    /// In addition it is a new block of memory,
+    /// and is no longer tied to the game state;
+    /// as such, mutating the game will not change the result
+    /// of serialising the returned object.
+    ///
+    /// The returned object is safe to send across threads.
+    ///
+    /// If you want to serialize the current state of the game straight away,
+    /// and don't require this extra functionality,
+    /// consider using [`serialize`][State::serialize] instead.
+    #[must_use]
+    pub fn make_serializer(&self) -> Serializer {
+        Serializer(Arc::new(self.entities.clone()))
+    }
+
+    /// Get a dependent serialisable view of the current state of the game.
+    ///
+    /// The returned serializer only represents
+    /// the mutable members of the game.
+    /// This only borrows the existing game state,
+    /// and must be used straight away.
+    ///
+    /// If you need to cache the current state to serialise later,
+    /// possibly on different threads,
+    /// consider using [`make_serializer`][State::make_serializer] instead.
+    #[must_use]
+    pub fn serialize(&self) -> impl Serialize + '_ {
+        &self.entities
+    }
+
+    /// Add a player to the game, starting them with a hive and some bees.
+    ///
+    /// # Errors
+    ///
+    /// May fail if there are no more available spawn points.
+    pub fn add_player(&mut self, player: Player) -> Result<()> {
+        let position = self
+            .spawn_points
+            .pop()
+            .context("Could not add player: no more available spawn points")?;
+        let (hive, bees) = Hive::new(player, position);
+        self.entities.hives.push(hive);
+        self.entities.bees.extend(bees);
+        Ok(())
+    }
+
+    /// Perform one game tick. User input is taken in `moves`.
+    pub fn tick(&mut self, moves: &Moves) {
+        self.entities
+            .tick(&self.config, &mut self.rng, &self.world, &moves)
+    }
+}
+
+/// A thread-safe cached serializer for a game state.
+///
+/// Refer to [`State::make_serializer`] for more details.
+#[derive(Debug, Clone)]
+pub struct Serializer(Arc<Entities>);
+
+impl Serialize for Serializer {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
     }
 }
