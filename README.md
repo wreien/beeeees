@@ -17,13 +17,18 @@ I recommend using [rustup](https://rustup.rs/).
 
 Once you have installed Rust, open a new terminal
 wherever you cloned this repository.
-Use the following commands to build and run the server on your machine.
+Use the following command to build and run the server on your machine.
 This should install all required dependencies for you.
-
-```
-cargo build
+```sh
 cargo run --release
 ```
 
-**TODO:** client programs (python?) 
+There is also a very rudimentary "echo" client
+you can use to interact with the server.
+You can run it using:
+```sh
+cargo run --bin echo --release
+```
+
+**TODO:** proper client programs (in python?)
 and website frontend (just a static JS thing, hopefully, though maybe node?).
