@@ -8,10 +8,11 @@ use std::time::Duration;
 use anyhow::Result;
 use tokio::{
     net::TcpListener,
+    signal,
     sync::{broadcast, mpsc},
 };
 
-use game::{world::World, Config, State};
+use game::{world::World, Config};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -19,27 +20,54 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     println!("Listening on {}", addr);
 
-    let state = State::new(default_world()?, Config::default());
+    let state = game::State::new(default_world()?, Config::default());
     let tick_rate = Duration::from_secs(2);
     let (events_tx, events_rx) = mpsc::channel(16);
     let (updates, _) = broadcast::channel(1);
+    tokio::spawn(server::play_game(
+        state,
+        tick_rate,
+        events_rx,
+        updates.clone(),
+    ));
 
-    {
-        let updates = updates.clone();
-        tokio::spawn(server::play_game(state, tick_rate, events_rx, updates));
-    }
-
+    let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
     loop {
-        let (socket, addr) = listener.accept().await?;
-        let events_tx = events_tx.clone();
-        let updates_rx = updates.subscribe();
-        tokio::spawn(async move {
-            println!("Handling new connection with address {}", addr);
-            if let Err(x) = server::handle_client(socket, events_tx, updates_rx).await {
-                println!("error: {:?}", x);
+        tokio::select! {
+            result = listener.accept() => {
+                let (socket, addr) = result?;
+                let events_tx = events_tx.clone();
+                let updates_rx = updates.subscribe();
+                let shutdown_tx = shutdown_tx.clone();
+                tokio::spawn(async move {
+                    println!("Handling new connection with address {}", addr);
+                    let fut = server::handle_client(
+                        socket,
+                        events_tx,
+                        updates_rx,
+                        shutdown_tx,
+                    );
+                    if let Err(x) = fut.await {
+                        println!("error: {:?}", x);
+                    }
+                });
+            },
+            _ = signal::ctrl_c() => {
+                println!("Interrupt requested, cleaning up...");
+                break;
             }
-        });
+        }
     }
+
+    // stop any currently running game server
+    drop(updates);
+    events_tx.send(server::GameEvent::Shutdown).await?;
+
+    // wait for all client processes to finish cleanly
+    drop(shutdown_tx);
+    let _ = shutdown_rx.recv().await;
+
+    Ok(())
 }
 
 #[rustfmt::skip]

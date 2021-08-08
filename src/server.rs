@@ -34,6 +34,8 @@ pub enum GameEvent {
         /// The bees to be moved.
         moves: Vec<(BeeID, Direction)>,
     },
+    /// Finish the game.
+    Shutdown,
 }
 
 /// Runs an instance of the game.
@@ -66,7 +68,7 @@ pub async fn play_game(
                             next_moves.insert((player, bee), direction);
                         }
                     },
-                    None => return,
+                    Some(GameEvent::Shutdown) | None => break,
                 }
             },
             // go to the next state
@@ -96,10 +98,13 @@ where
 /// Handles the `socket` associated with `player`.
 /// Transmits events to the associated game using `events`,
 /// and passes along any `updates` it receives back to the socket.
+///
+/// The `_shutdown` channel is used to determine when the client has closed cleanly.
 pub async fn handle_client(
     mut socket: TcpStream,
     events: mpsc::Sender<GameEvent>,
     mut updates: broadcast::Receiver<game::Serializer>,
+    _shutdown: mpsc::Sender<()>,
 ) -> Result<()> {
     let player = Player::new();
     let (reader, mut writer) = socket.split();
@@ -126,21 +131,20 @@ pub async fn handle_client(
                         let msg = format!("lagging behind: skipped {} update(s)", skipped);
                         write_json(&mut writer, json!({"type": "warning", "msg": msg})).await?;
                     },
-                    Err(RecvError::Closed) => {
-                        write_json(&mut writer, json!({"type": "done"})).await?;
-                        break;
-                    },
+                    Err(RecvError::Closed) => break,
                 }
             }
             line = lines.next_line() => {
                 let line = match line? {
                     Some(x) => x,
-                    _ => break,
+                    None => break,
                 };
                 match serde_json::from_str::<Vec<ReadFrame>>(&line) {
                     Ok(moves) => {
                         let moves = moves.into_iter().map(|m| (m.bee, m.direction)).collect();
-                        events.send(GameEvent::Move { player, moves }).await?;
+                        if let Err(_) = events.send(GameEvent::Move { player, moves }).await {
+                            break;
+                        }
                     }
                     Err(_) => {
                         write_json(&mut writer, json!({"type": "error", "msg": "bad input"})).await?;
@@ -149,6 +153,9 @@ pub async fn handle_client(
             }
         }
     }
+
+    write_json(&mut writer, json!({"type": "done"})).await?;
+    writer.shutdown().await?;
 
     Ok(())
 }
