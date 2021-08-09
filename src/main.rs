@@ -48,7 +48,8 @@ async fn main() -> Result<()> {
     }
 
     // stop any currently running game server
-    events_tx.send(server::GameEvent::Finish).await?;
+    // we ignore any failures, since that just means the server is already closed
+    let _ = events_tx.send(server::GameEvent::Finish).await;
 
     // wait for all client processes to finish cleanly
     drop(shutdown_tx);
