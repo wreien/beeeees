@@ -6,11 +6,7 @@ mod server;
 use std::time::Duration;
 
 use anyhow::Result;
-use tokio::{
-    net::TcpListener,
-    signal,
-    sync::{broadcast, mpsc},
-};
+use tokio::{net::TcpListener, signal, sync::mpsc};
 
 use game::{world::World, Config};
 
@@ -23,13 +19,7 @@ async fn main() -> Result<()> {
     let state = game::State::new(default_world()?, Config::default());
     let tick_rate = Duration::from_secs(2);
     let (events_tx, events_rx) = mpsc::channel(16);
-    let (updates, _) = broadcast::channel(1);
-    tokio::spawn(server::play_game(
-        state,
-        tick_rate,
-        events_rx,
-        updates.clone(),
-    ));
+    tokio::spawn(server::play_game(state, tick_rate, events_rx));
 
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
     loop {
@@ -37,14 +27,12 @@ async fn main() -> Result<()> {
             result = listener.accept() => {
                 let (socket, addr) = result?;
                 let events_tx = events_tx.clone();
-                let updates_rx = updates.subscribe();
                 let shutdown_tx = shutdown_tx.clone();
                 tokio::spawn(async move {
                     println!("Handling new connection with address {}", addr);
                     let fut = server::handle_client(
                         socket,
                         events_tx,
-                        updates_rx,
                         shutdown_tx,
                     );
                     if let Err(x) = fut.await {
@@ -60,8 +48,7 @@ async fn main() -> Result<()> {
     }
 
     // stop any currently running game server
-    drop(updates);
-    events_tx.send(server::GameEvent::Shutdown).await?;
+    events_tx.send(server::GameEvent::Finish).await?;
 
     // wait for all client processes to finish cleanly
     drop(shutdown_tx);

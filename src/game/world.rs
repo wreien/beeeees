@@ -94,7 +94,7 @@ impl Tile {
 }
 
 /// Stores the world map for the game.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(try_from = "WorldDeserializer")]
 pub struct World {
     /// The width of the map, in number of tiles.

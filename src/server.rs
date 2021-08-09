@@ -1,8 +1,8 @@
 //! The primary game server that interacts with players and observers.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use anyhow::Result;
+use anyhow::{anyhow, Error, Result};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::{
@@ -15,7 +15,14 @@ use tokio::{
     time,
 };
 
-use crate::game::{self, world::Direction, BeeID, Moves, Player};
+use crate::game::{
+    self,
+    world::{Direction, World},
+    BeeID, Moves, Player,
+};
+
+/// The information passed back by the game on successful creation.
+pub type GameEventResponse = (broadcast::Receiver<game::Serializer>, Arc<World>);
 
 /// An event to be passed to the active game.
 #[derive(Debug)]
@@ -24,8 +31,12 @@ pub enum GameEvent {
     Create {
         /// The player ID that's getting added.
         player: Player,
-        /// Passes the result of adding the player.
-        result: oneshot::Sender<Result<()>>,
+        /// Used to respond back on the status of the request.
+        ///
+        /// If the player was successfully added,
+        /// provides the receiving end of a channel for game state updates
+        /// and a reference to the (immutable) tile map for the game.
+        response: oneshot::Sender<Result<GameEventResponse>>,
     },
     /// Move the player's bees within the game.
     Move {
@@ -35,7 +46,7 @@ pub enum GameEvent {
         moves: Vec<(BeeID, Direction)>,
     },
     /// Finish the game.
-    Shutdown,
+    Finish,
 }
 
 /// Runs an instance of the game.
@@ -49,26 +60,30 @@ pub async fn play_game(
     mut state: game::State,
     tick_rate: Duration,
     mut events: mpsc::Receiver<GameEvent>,
-    updates: broadcast::Sender<game::Serializer>,
 ) {
     let mut next_moves = Moves::new();
     let mut interval = time::interval(tick_rate);
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    let (updates, _) = broadcast::channel(1);
+    let world = Arc::new(state.world().clone());
 
     loop {
         tokio::select! {
             // handle any events sent in
             event = events.recv() => {
                 match event {
-                    Some(GameEvent::Create{ player, result }) => {
-                        result.send(state.add_player(player)).unwrap();
+                    Some(GameEvent::Create{ player, response }) => {
+                        let result = state
+                            .add_player(player)
+                            .map(|()| (updates.subscribe(), world.clone()));
+                        response.send(result).unwrap();
                     },
                     Some(GameEvent::Move { player, moves }) => {
                         for (bee, direction) in moves {
                             next_moves.insert((player, bee), direction);
                         }
                     },
-                    Some(GameEvent::Shutdown) | None => break,
+                    Some(GameEvent::Finish) | None => break,
                 }
             },
             // go to the next state
@@ -90,27 +105,50 @@ where
     writer
         .write_all(format!("{}\n", payload).as_bytes())
         .await
-        .map_err(anyhow::Error::new)
+        .map_err(Error::new)
 }
 
 /// Manage a single client socket.
 ///
 /// Handles the `socket` associated with `player`.
-/// Transmits events to the associated game using `events`,
-/// and passes along any `updates` it receives back to the socket.
+/// Transmits events to the associated game using `events`.
 ///
 /// The `_shutdown` channel is used to determine when the client has closed cleanly.
 pub async fn handle_client(
     mut socket: TcpStream,
     events: mpsc::Sender<GameEvent>,
-    mut updates: broadcast::Receiver<game::Serializer>,
     _shutdown: mpsc::Sender<()>,
 ) -> Result<()> {
-    let player = Player::new();
     let (reader, mut writer) = socket.split();
     let mut lines = BufReader::new(reader).lines();
+    let finished_msg = "game already finished";
 
-    // TODO: manage initial handshaking
+    // TODO: better registration (e.g. ping the player for some helpful info?)
+
+    let player = Player::new();
+    let (response, register_rx) = oneshot::channel();
+    if let Err(e) = events.send(GameEvent::Create { player, response }).await {
+        write_json(&mut writer, json!({"type": "error", "msg": finished_msg})).await?;
+        writer.shutdown().await?;
+        return Err(anyhow!(e));
+    }
+
+    let mut updates = match register_rx.await.map_err(|_| anyhow!(finished_msg)) {
+        Ok(Ok((updates, world))) => {
+            let payload = json!({
+                "type": "registration",
+                "world": *world,
+                "player_id": player,
+            });
+            write_json(&mut writer, payload).await?;
+            updates
+        }
+        Ok(Err(e)) | Err(e) => {
+            write_json(&mut writer, json!({"type": "error", "msg": e.to_string()})).await?;
+            writer.shutdown().await?;
+            return Err(e);
+        }
+    };
 
     loop {
         /// Type used to parse a frame from the input.
@@ -147,7 +185,7 @@ pub async fn handle_client(
                         }
                     }
                     Err(_) => {
-                        write_json(&mut writer, json!({"type": "error", "msg": "bad input"})).await?;
+                        write_json(&mut writer, json!({"type": "warning", "msg": "bad input, ignored"})).await?;
                     }
                 }
             }
