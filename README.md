@@ -44,3 +44,18 @@ cargo doc --open
 The communication protocol is described [here](protocol.md).
 However, for more details it is probably better
 to read the documentation for the server itself.
+
+## Logging
+
+By default the server logs a number of interesting events to `stderr`.
+You can customise the logging using the `RUST_LOG` environment variable.
+For example, on Unix-like systems you might do the following:
+
+```sh
+env RUST_LOG=trace cargo run    # log everything
+# or
+env RUST_LOG=warn cargo run     # only log warnings and error messages
+```
+
+See [the `env_logger` documentation](https://docs.rs/env_logger)
+for more details.

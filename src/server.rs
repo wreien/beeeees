@@ -1,8 +1,9 @@
 //! The primary game server that interacts with players and observers.
 
-use std::{sync::Arc, time::Duration};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Error, Result};
+use log::{debug, info, trace, warn};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::{
@@ -73,6 +74,7 @@ pub async fn play_game(
             event = events.recv() => {
                 match event {
                     Some(GameEvent::Create{ player, response }) => {
+                        trace!("Adding player {:?}", player);
                         let result = state
                             .add_player(player)
                             .map(|()| (updates.subscribe(), world.clone()));
@@ -92,6 +94,7 @@ pub async fn play_game(
             },
             // go to the next state
             _ = interval.tick() => {
+                trace!("Server tick");
                 state.tick(&next_moves);
                 // ignore errors of nobody connected yet
                 let _ = updates.send(state.make_serializer());
@@ -99,6 +102,8 @@ pub async fn play_game(
             }
         }
     }
+
+    info!("Game server shutting down");
 }
 
 /// Write a newline-terminated JSON payload to the given sink.
@@ -120,12 +125,13 @@ where
 /// The `_shutdown` channel is used to determine when the client has closed cleanly.
 pub async fn handle_client(
     mut socket: TcpStream,
+    addr: SocketAddr,
     events: mpsc::Sender<GameEvent>,
     _shutdown: mpsc::Sender<()>,
 ) -> Result<()> {
     let (reader, mut writer) = socket.split();
     let mut lines = BufReader::new(reader).lines();
-    let finished_msg = "game already finished";
+    let finished_msg = "Game already finished";
 
     // TODO: better registration (e.g. ping the player for some helpful info?)
 
@@ -139,6 +145,7 @@ pub async fn handle_client(
 
     let mut updates = match register_rx.await.map_err(|_| anyhow!(finished_msg)) {
         Ok(Ok((updates, world))) => {
+            info!("Registered {} as {:?}", addr, player);
             let payload = json!({
                 "type": "registration",
                 "world": *world,
@@ -171,7 +178,8 @@ pub async fn handle_client(
                         write_json(&mut writer, json!({"type": "update", "data": state})).await?;
                     }
                     Err(RecvError::Lagged(skipped)) => {
-                        let msg = format!("lagging behind: skipped {} update(s)", skipped);
+                        let msg = format!("Lagging behind: skipped {} update(s)", skipped);
+                        warn!("{:?} {}", player, msg);
                         write_json(&mut writer, json!({"type": "warning", "msg": msg})).await?;
                     },
                     Err(RecvError::Closed) => break,
@@ -189,8 +197,9 @@ pub async fn handle_client(
                             break;
                         }
                     }
-                    Err(_) => {
-                        let msg = "bad input";
+                    Err(e) => {
+                        debug!("Bad input from {:?}: {:?} with input \"{}\"", player, e, line);
+                        let msg = "Bad input";
                         write_json(&mut writer, json!({"type": "warning", "msg": msg})).await?;
                     }
                 }
@@ -201,5 +210,6 @@ pub async fn handle_client(
     write_json(&mut writer, json!({"type": "done"})).await?;
     writer.shutdown().await?;
 
+    info!("Successfully closed {:?} ({})", player, addr);
     Ok(())
 }

@@ -6,15 +6,21 @@ mod server;
 use std::time::Duration;
 
 use anyhow::Result;
+use log::{debug, error, info};
 use tokio::{net::TcpListener, signal, sync::mpsc};
 
 use game::{world::World, Config};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::Builder::new()
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env()
+        .init();
+
     let addr = "127.0.0.1:49998";
     let listener = TcpListener::bind(addr).await?;
-    println!("Listening on {}", addr);
+    info!("Listening on {}", addr);
 
     let state = game::State::new(default_world()?, Config::default());
     let tick_rate = Duration::from_secs(2);
@@ -29,19 +35,20 @@ async fn main() -> Result<()> {
                 let events_tx = events_tx.clone();
                 let shutdown_tx = shutdown_tx.clone();
                 tokio::spawn(async move {
-                    println!("Handling new connection with address {}", addr);
+                    info!("Handling new connection with address {}", addr);
                     let fut = server::handle_client(
                         socket,
+                        addr,
                         events_tx,
                         shutdown_tx,
                     );
                     if let Err(x) = fut.await {
-                        println!("error: {:?}", x);
+                        error!("When handling {}: {:?}", addr, x);
                     }
                 });
             },
             _ = signal::ctrl_c() => {
-                println!("Interrupt requested, cleaning up...");
+                info!("Interrupt requested, cleaning up...");
                 break;
             }
         }
@@ -49,9 +56,11 @@ async fn main() -> Result<()> {
 
     // stop any currently running game server
     // we ignore any failures, since that just means the server is already closed
+    debug!("Requesting server to finish");
     let _ = events_tx.send(server::GameEvent::Finish).await;
 
     // wait for all client processes to finish cleanly
+    debug!("Waiting for clients to clean up");
     drop(shutdown_tx);
     let _ = shutdown_rx.recv().await;
 
