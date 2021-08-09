@@ -261,7 +261,7 @@ impl State {
     /// Perform one game tick. User input is taken in `moves`.
     pub fn tick(&mut self, moves: &Moves) {
         self.entities
-            .tick(&self.config, &mut self.rng, &self.world, &moves)
+            .tick(&self.config, &mut self.rng, &self.world, moves)
     }
 }
 

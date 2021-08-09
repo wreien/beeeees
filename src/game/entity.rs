@@ -94,7 +94,7 @@ impl Bee {
     pub fn rest(&mut self) {
         self.pollen = 0;
         self.last_flower = None;
-        self.energy = (self.energy + 5).max(50);
+        self.energy = (self.energy + 5).min(50);
     }
 
     /// Intermingle pollen with any flowers you're on.
