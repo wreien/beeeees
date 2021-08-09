@@ -43,7 +43,7 @@ pub enum GameEvent {
         /// The player requesting the move.
         player: Player,
         /// The bees to be moved.
-        moves: Vec<(BeeID, Direction)>,
+        moves: Vec<(BeeID, Option<Direction>)>,
     },
     /// Finish the game.
     Finish,
@@ -80,7 +80,11 @@ pub async fn play_game(
                     },
                     Some(GameEvent::Move { player, moves }) => {
                         for (bee, direction) in moves {
-                            next_moves.insert((player, bee), direction);
+                            if let Some(direction) = direction {
+                                next_moves.insert((player, bee), direction);
+                            } else {
+                                next_moves.remove(&(player, bee));
+                            }
                         }
                     },
                     Some(GameEvent::Finish) | None => break,
@@ -138,7 +142,7 @@ pub async fn handle_client(
             let payload = json!({
                 "type": "registration",
                 "world": *world,
-                "player_id": player,
+                "player": player,
             });
             write_json(&mut writer, payload).await?;
             updates
@@ -155,7 +159,8 @@ pub async fn handle_client(
         #[derive(Deserialize)]
         struct ReadFrame {
             pub bee: BeeID,
-            pub direction: Direction,
+            #[serde(default)]
+            pub direction: Option<Direction>,
         }
 
         tokio::select! {
@@ -180,12 +185,13 @@ pub async fn handle_client(
                 match serde_json::from_str::<Vec<ReadFrame>>(&line) {
                     Ok(moves) => {
                         let moves = moves.into_iter().map(|m| (m.bee, m.direction)).collect();
-                        if let Err(_) = events.send(GameEvent::Move { player, moves }).await {
+                        if events.send(GameEvent::Move { player, moves }).await.is_err() {
                             break;
                         }
                     }
                     Err(_) => {
-                        write_json(&mut writer, json!({"type": "warning", "msg": "bad input, ignored"})).await?;
+                        let msg = "bad input";
+                        write_json(&mut writer, json!({"type": "warning", "msg": msg})).await?;
                     }
                 }
             }

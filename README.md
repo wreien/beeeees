@@ -32,3 +32,15 @@ cargo run --bin echo --release
 
 **TODO:** proper client programs (in python?)
 and website frontend (just a static JS thing, hopefully, though maybe node?).
+
+## Documentation
+
+You can generate documentation describing the internals of the server with:
+
+```sh
+cargo doc --open
+```
+
+The communication protocol is described [here](protocol.md).
+However, for more details it is probably better
+to read the documentation for the server itself.
