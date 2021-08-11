@@ -2,17 +2,13 @@
 
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{anyhow, Result};
+use futures::{future, Sink, SinkExt, Stream, StreamExt};
 use log::{debug, info, trace, warn};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::TcpStream,
-    sync::{
-        broadcast::{self, error::RecvError},
-        mpsc, oneshot,
-    },
+    sync::{broadcast, mpsc, oneshot},
     time,
 };
 
@@ -106,31 +102,24 @@ pub async fn play_game(
     info!("Game server shutting down");
 }
 
-/// Write a newline-terminated JSON payload to the given sink.
-async fn write_json<W>(writer: &mut W, payload: serde_json::Value) -> Result<()>
-where
-    W: AsyncWriteExt + Unpin,
-{
-    writer
-        .write_all(format!("{}\n", payload).as_bytes())
-        .await
-        .map_err(Error::new)
-}
-
 /// Manage a single client socket.
 ///
 /// Handles the `socket` associated with `player`.
 /// Transmits events to the associated game using `events`.
 ///
 /// The `_shutdown` channel is used to determine when the client has closed cleanly.
-pub async fn handle_client(
-    mut socket: TcpStream,
+pub async fn handle_client<S, E>(
+    socket: S,
     addr: SocketAddr,
     events: mpsc::Sender<GameEvent>,
     _shutdown: mpsc::Sender<()>,
-) -> Result<()> {
-    let (reader, mut writer) = socket.split();
-    let mut lines = BufReader::new(reader).lines();
+) -> Result<()>
+where
+    S: Stream<Item = Result<String, E>> + Sink<String, Error = E>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let (sink, mut stream) = socket.split();
+    let mut sink = sink.with(|x: serde_json::Value| future::ok::<_, E>(x.to_string()));
     let finished_msg = "Game already finished";
 
     // TODO: better registration (e.g. ping the player for some helpful info?)
@@ -138,8 +127,9 @@ pub async fn handle_client(
     let player = Player::new();
     let (response, register_rx) = oneshot::channel();
     if let Err(e) = events.send(GameEvent::Create { player, response }).await {
-        write_json(&mut writer, json!({"type": "error", "msg": finished_msg})).await?;
-        writer.shutdown().await?;
+        let msg = finished_msg;
+        sink.send(json!({"type": "error", "msg": msg})).await?;
+        sink.close().await?;
         return Err(anyhow!(e));
     }
 
@@ -151,65 +141,92 @@ pub async fn handle_client(
                 "world": *world,
                 "player": player,
             });
-            write_json(&mut writer, payload).await?;
+            sink.send(payload).await?;
             updates
         }
         Ok(Err(e)) | Err(e) => {
-            write_json(&mut writer, json!({"type": "error", "msg": e.to_string()})).await?;
-            writer.shutdown().await?;
+            let msg = e.to_string();
+            sink.send(json!({"type": "error", "msg": msg})).await?;
+            sink.close().await?;
             return Err(e);
         }
     };
 
     loop {
-        /// Type used to parse a frame from the input.
-        #[derive(Deserialize)]
-        struct ReadFrame {
-            pub bee: BeeID,
-            #[serde(default)]
-            pub direction: Option<Direction>,
-        }
-
         tokio::select! {
             res = updates.recv() => {
                 match res {
                     Ok(state) => {
                         // TODO: filter to only things relevant for this player?
-                        write_json(&mut writer, json!({"type": "update", "data": state})).await?;
+                        sink.send(json!({"type": "update", "data": state})).await?;
                     }
-                    Err(RecvError::Lagged(skipped)) => {
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         let msg = format!("Lagging behind: skipped {} update(s)", skipped);
                         warn!("{:?} {}", player, msg);
-                        write_json(&mut writer, json!({"type": "warning", "msg": msg})).await?;
+                        sink.send(json!({"type": "warning", "msg": msg})).await?;
                     },
-                    Err(RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
-            line = lines.next_line() => {
-                let line = match line? {
-                    Some(x) => x,
-                    None => break,
-                };
-                match serde_json::from_str::<Vec<ReadFrame>>(&line) {
-                    Ok(moves) => {
-                        let moves = moves.into_iter().map(|m| (m.bee, m.direction)).collect();
-                        if events.send(GameEvent::Move { player, moves }).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        debug!("Bad input from {:?}: {:?} with input \"{}\"", player, e, line);
-                        let msg = "Bad input";
-                        write_json(&mut writer, json!({"type": "warning", "msg": msg})).await?;
-                    }
-                }
+            Some(packet) = stream.next() => {
+                process_packet(player, packet, &mut sink, &events).await?;
             }
+            else => break,
         }
     }
 
-    write_json(&mut writer, json!({"type": "done"})).await?;
-    writer.shutdown().await?;
+    sink.send(json!({"type": "done"})).await?;
+    sink.close().await?;
 
     info!("Successfully closed {:?} ({})", player, addr);
+    Ok(())
+}
+
+/// Process a packet received from a player.
+///
+/// Ignores any errors sending results to the game,
+/// since this means that the game should be entering shutdown anyway.
+async fn process_packet<S, E>(
+    player: Player,
+    packet: Result<String, E>,
+    sink: &mut S,
+    events: &mpsc::Sender<GameEvent>,
+) -> Result<(), E>
+where
+    S: Sink<serde_json::Value, Error = E> + Unpin,
+    E: std::error::Error,
+{
+    /// Type used to parse a frame from the input.
+    #[derive(Deserialize)]
+    struct ReadFrame {
+        pub bee: BeeID,
+        #[serde(default)]
+        pub direction: Option<Direction>,
+    }
+
+    match packet {
+        Ok(input) => match serde_json::from_str::<Vec<ReadFrame>>(&input) {
+            Ok(moves) => {
+                let moves = moves.into_iter().map(|m| (m.bee, m.direction)).collect();
+                let result = events.send(GameEvent::Move { player, moves }).await;
+                if result.is_err() {
+                    debug!("{:?} failed to send move event", player);
+                }
+            }
+            Err(e) => {
+                debug!("Bad input from {:?}: {} with input '{}'", player, e, input);
+                let msg = "Bad input";
+                sink.send(json!({"type": "warning", "msg": msg})).await?;
+            }
+        },
+        Err(e) => {
+            let msg = "Bad packet";
+            sink.send(json!({"type": "warning", "msg": msg})).await?;
+            // log the warning after sending it,
+            // to not double up on errors due to connection failure
+            warn!("Bad packet from {:?}: {}", player, e);
+        }
+    }
+
     Ok(())
 }

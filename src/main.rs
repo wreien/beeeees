@@ -8,6 +8,7 @@ use std::time::Duration;
 use anyhow::Result;
 use log::{debug, error, info};
 use tokio::{net::TcpListener, signal, sync::mpsc};
+use tokio_util::codec::{Decoder, LinesCodec};
 
 use game::{world::World, Config};
 
@@ -32,6 +33,7 @@ async fn main() -> Result<()> {
         tokio::select! {
             result = listener.accept() => {
                 let (socket, addr) = result?;
+                let socket = LinesCodec::new_with_max_length(8192).framed(socket);
                 let events_tx = events_tx.clone();
                 let shutdown_tx = shutdown_tx.clone();
                 tokio::spawn(async move {
