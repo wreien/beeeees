@@ -1,12 +1,12 @@
 # Bees Game
 
-A coöperative multiplayer network-based game, 
-where players must control swarms of bees 
+A coöperative multiplayer network-based game,
+where players must control swarms of bees
 to collect as much pollen as possible.
 
 Developed for Reboot 2021.
 
-**Note:** this is currently in very early development, 
+**Note:** this is currently in very early development,
 and still needs a lot of work to be functional.
 
 ## Getting Started

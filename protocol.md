@@ -1,8 +1,8 @@
 # Protocol
 
 Currently the server is hardcoded to start
-at the address `127.0.0.1:49998`, using a TCP stream. 
-All transmission is done using UTF-8 encoded 
+at the address `127.0.0.1:49998`, using a TCP stream.
+All transmission is done using UTF-8 encoded
 [JSON](https://www.json.org/json-en.html),
 delimited by newlines for easy parsing.
 
@@ -90,7 +90,7 @@ Example:
         "player": 4,
         "energy": 18,
         "pollen": 6,
-        "position": { 
+        "position": {
           "x": 7,
           "y": 3
         }
@@ -179,6 +179,8 @@ Example:
 
 At this stage, the only message sent by the client are actions.
 This is a list of movements for each bee controlled by the client.
+All entries should be less than 8192 characters long;
+longer transmissions will be rejected by the server.
 
 Each message should be a list of objects,
 where each object has the following two fields:
@@ -204,6 +206,6 @@ Example:
   { "bee": 1, "direction": "North" },
   { "bee": 2, "direction": "West" },
   { "bee": 5, "direction": null },
-  { "bee": 7 }  // same as specifying `"direction": null`. 
+  { "bee": 7 }  // same as specifying `"direction": null`.
 ]
 ```
