@@ -38,7 +38,7 @@ async fn main() -> Result<()> {
                 let shutdown_tx = shutdown_tx.clone();
                 tokio::spawn(async move {
                     info!("Handling new connection with address {}", addr);
-                    let fut = server::handle_client(
+                    let fut = server::handle_player(
                         socket,
                         addr,
                         events_tx,

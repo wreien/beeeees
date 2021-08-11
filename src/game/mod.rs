@@ -24,7 +24,7 @@
 mod entity;
 pub mod world;
 
-use std::{ops::RangeInclusive, sync::Arc};
+use std::{fmt, ops::RangeInclusive, sync::Arc};
 
 use anyhow::{Context, Result};
 use global_counter::primitive::exact::CounterU64;
@@ -48,14 +48,40 @@ impl Player {
     /// Note that IDs generated will be duplicated across different executions.
     #[must_use]
     pub fn new() -> Self {
-        static PLAYER_COUNTER: CounterU64 = CounterU64::new(0);
+        static PLAYER_COUNTER: CounterU64 = CounterU64::new(1);
         Player(PLAYER_COUNTER.inc())
+    }
+
+    /// Create an observer player.
+    ///
+    /// This is not a "real" player for the purposes of the game;
+    /// they cannot perform any actions and have no impact on the game,
+    /// but can subscribe to view the current game state.
+    #[must_use]
+    pub fn observer() -> Self {
+        Player(0)
+    }
+
+    /// Whether this ID indicates an observer or not.
+    #[must_use]
+    pub fn is_observer(&self) -> bool {
+        self.0 == 0
     }
 }
 
 impl Default for Player {
     fn default() -> Self {
         Player::new()
+    }
+}
+
+impl fmt::Display for Player {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_observer() {
+            write!(f, "Observer")
+        } else {
+            write!(f, "Player({})", self.0)
+        }
     }
 }
 
@@ -248,6 +274,7 @@ impl State {
     ///
     /// May fail if there are no more available spawn points.
     pub fn add_player(&mut self, player: Player) -> Result<()> {
+        assert!(!player.is_observer());
         let position = self
             .spawn_points
             .pop()
