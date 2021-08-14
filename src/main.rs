@@ -3,7 +3,11 @@
 mod game;
 mod server;
 
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::Result;
 use log::{debug, error, info};
@@ -28,6 +32,7 @@ async fn main() -> Result<()> {
     let (events_tx, events_rx) = mpsc::channel(16);
     tokio::spawn(server::play_game(state, tick_rate, events_rx));
 
+    let players = Arc::new(Mutex::new(HashMap::new()));
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
     loop {
         tokio::select! {
@@ -35,6 +40,7 @@ async fn main() -> Result<()> {
                 let (socket, addr) = result?;
                 let socket = LinesCodec::new_with_max_length(8192).framed(socket);
                 let events_tx = events_tx.clone();
+                let players = players.clone();
                 let shutdown_tx = shutdown_tx.clone();
                 tokio::spawn(async move {
                     info!("Handling new connection with address {}", addr);
@@ -42,6 +48,7 @@ async fn main() -> Result<()> {
                         socket,
                         addr,
                         events_tx,
+                        players,
                         shutdown_tx,
                     );
                     if let Err(x) = fut.await {

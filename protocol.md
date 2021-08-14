@@ -16,6 +16,18 @@ for easier reading and understanding.
 However, in practice there should be no newlines in a message,
 either sending or receiving.
 
+## Preparation
+
+The first line a client sends to the server should be
+a single newline-terminated string with the client's name.
+This should be unique,
+and is used by the server to allow reconnecting to an existing game.
+You may send an empty string to connect as an "observer":
+observers receive the same input as normal players,
+but all communication from an observer to the server is ignored.
+
+The server will not send any information until this string is sent.
+
 ## Server to Client
 
 There are five kinds of messages that the server will send,

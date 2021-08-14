@@ -1,21 +1,23 @@
 //! The primary game server that interacts with players and observers.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::{anyhow, Result};
 use futures::{future, Sink, SinkExt, Stream, StreamExt};
 use log::{debug, info, trace, warn};
 use serde::Deserialize;
 use serde_json::json;
-use tokio::{
-    sync::{broadcast, mpsc, oneshot},
-    time,
-};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::game::{
     self,
     world::{Direction, World},
-    BeeID, Moves, Player,
+    Player,
 };
 
 /// The information passed back by the game on successful creation.
@@ -24,8 +26,10 @@ pub type GameEventResponse = (broadcast::Receiver<game::Serializer>, Arc<World>)
 /// An event to be passed to the active game.
 #[derive(Debug)]
 pub enum GameEvent {
-    /// Add a new player or observer to the game.
-    Create {
+    /// Add a player or observer to the game.
+    ///
+    /// Also used for reconnecting players who have previously disconnected.
+    AddPlayer {
         /// The player ID that's getting added.
         ///
         /// If [`player.is_observer()`][Player::observer]
@@ -41,12 +45,19 @@ pub enum GameEvent {
         /// and a reference to the (immutable) tile map for the game.
         response: oneshot::Sender<Result<GameEventResponse>>,
     },
+    /// Notify that a player has disconnected early from the game.
+    ///
+    /// Used to determine whether to admit a reconnecting player.
+    Disconnect {
+        /// The player that disconnected.
+        player: Player,
+    },
     /// Move the player's bees within the game.
     Move {
         /// The player requesting the move.
         player: Player,
         /// The bees to be moved.
-        moves: Vec<(BeeID, Option<Direction>)>,
+        moves: Vec<(game::BeeID, Option<Direction>)>,
     },
     /// Finish the game.
     Finish,
@@ -64,39 +75,50 @@ pub async fn play_game(
     tick_rate: Duration,
     mut events: mpsc::Receiver<GameEvent>,
 ) {
-    let mut next_moves = Moves::new();
-    let mut interval = time::interval(tick_rate);
-    interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
+    let mut next_moves = game::Moves::new();
+    let mut interval = tokio::time::interval(tick_rate);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut active_players = HashSet::new();
     let (updates, _) = broadcast::channel(1);
     let world = Arc::new(state.world().clone());
 
     loop {
         tokio::select! {
             // handle any events sent in
-            event = events.recv() => {
-                match event {
-                    Some(GameEvent::Create{ player, response }) => {
-                        let events = |_| (updates.subscribe(), world.clone());
-                        trace!("Adding player {}", player);
-                        let result = if player.is_observer() {
-                            Ok(events(()))
-                        } else {
-                            state.add_player(player).map(events)
-                        };
-                        response.send(result).unwrap();
-                    },
-                    Some(GameEvent::Move { player, moves }) => {
-                        assert!(!player.is_observer());
-                        for (bee, direction) in moves {
-                            if let Some(direction) = direction {
-                                next_moves.insert((player, bee), direction);
+            event = events.recv() => match event {
+                Some(GameEvent::AddPlayer{ player, response }) => {
+                    trace!("Adding player {}", player);
+                    let result = if player.is_observer() {
+                        Ok(())
+                    } else {
+                        state.add_player(player).and_then(|_| {
+                            if active_players.insert(player) {
+                                Ok(())
                             } else {
-                                next_moves.remove(&(player, bee));
+                                Err(anyhow!("Duplicate player ID"))
                             }
-                        }
-                    },
-                    Some(GameEvent::Finish) | None => break,
+                        })
+                    };
+                    let get_data = |_| (updates.subscribe(), world.clone());
+                    response.send(result.map(get_data)).unwrap();
+                },
+                Some(GameEvent::Disconnect { player }) => {
+                    debug!("Disconnecting {}", player);
+                    if !active_players.remove(&player) {
+                        warn!("Disconnecting {} that wasn't active?", player);
+                    }
                 }
+                Some(GameEvent::Move { player, moves }) => {
+                    assert!(!player.is_observer());
+                    for (bee, direction) in moves {
+                        if let Some(direction) = direction {
+                            next_moves.insert((player, bee), direction);
+                        } else {
+                            next_moves.remove(&(player, bee));
+                        }
+                    }
+                },
+                Some(GameEvent::Finish) | None => break,
             },
             // go to the next state
             _ = interval.tick() => {
@@ -123,11 +145,6 @@ pub async fn play_game(
 /// The `player` can be an [observer][Player::observer];
 /// in that case the player is not added to the game,
 /// but we still subscribe to the receiver.
-///
-/// # TODO
-///
-/// More detailed registration for non-observers?
-/// (e.g. ask the player for some helpful info?)
 async fn register<S, E>(
     player: Player,
     sink: &mut S,
@@ -138,10 +155,11 @@ where
     S: Sink<serde_json::Value, Error = E> + Unpin,
     E: std::error::Error + Send + Sync + 'static,
 {
+    trace!("Registering {} ({})", player, addr);
     let finished_msg = "Game already finished";
 
     let (response, register_rx) = oneshot::channel();
-    if let Err(e) = events.send(GameEvent::Create { player, response }).await {
+    if let Err(e) = events.send(GameEvent::AddPlayer { player, response }).await {
         let msg = finished_msg;
         sink.send(json!({"type": "error", "msg": msg})).await?;
         sink.close().await?;
@@ -187,10 +205,10 @@ where
     let mut sink = socket.with(|x: serde_json::Value| future::ok::<_, E>(x.to_string()));
     let mut updates = register(Player::observer(), &mut sink, addr, &events).await?;
 
-    use broadcast::error::RecvError::{Closed, Lagged};
     loop {
         // Note: we don't really care about lagging for observers
         // but worth logging a warning anyway, just in case
+        use broadcast::error::RecvError::{Closed, Lagged};
         match updates.recv().await {
             Ok(state) => sink.send(json!({"type": "update", "data": state})).await?,
             Err(Lagged(skipped)) => warn!("{} lagging, skipped {} update(s)", addr, skipped),
@@ -215,47 +233,97 @@ pub async fn handle_player<S, E>(
     socket: S,
     addr: SocketAddr,
     events: mpsc::Sender<GameEvent>,
+    players: Arc<Mutex<HashMap<String, Player>>>,
     _shutdown: mpsc::Sender<()>,
 ) -> Result<()>
 where
     S: Stream<Item = Result<String, E>> + Sink<String, Error = E> + Unpin,
     E: std::error::Error + Send + Sync + 'static,
 {
-    let (sink, mut stream) = socket.split();
-    let mut sink = sink.with(|x: serde_json::Value| future::ok::<_, E>(x.to_string()));
-
-    // TODO: better registration (e.g. ping the player for some helpful info?)
-    let player = Player::new();
-    let mut updates = register(player, &mut sink, addr, &events).await?;
-
-    loop {
-        tokio::select! {
-            res = updates.recv() => {
-                match res {
-                    Ok(state) => {
-                        // TODO: filter to only things relevant for this player?
-                        sink.send(json!({"type": "update", "data": state})).await?;
-                    }
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        let msg = format!("Lagging behind: skipped {} update(s)", skipped);
-                        warn!("{} {}", player, msg);
-                        sink.send(json!({"type": "warning", "msg": msg})).await?;
-                    },
-                    Err(broadcast::error::RecvError::Closed) => break,
-                }
-            }
-            Some(packet) = stream.next() => {
-                process_packet(player, packet, &mut sink, &events).await?;
-            }
-            else => break,
+    let (mut sink, mut stream) = socket.split();
+    let name = match stream.next().await {
+        Some(Ok(name)) => name,
+        Some(Err(e)) => {
+            let msg = e.to_string();
+            sink.send(json!({"type": "error", "msg": msg}).to_string())
+                .await?;
+            sink.close().await?;
+            return Err(anyhow!(e));
         }
+        None => {
+            return Err(anyhow!("Far side closed when collecting name."));
+        }
+    };
+
+    if name.is_empty() {
+        warn!("No name provided, downgrading {} to observer", addr);
+        return handle_observer(sink, addr, events, _shutdown).await;
     }
 
-    sink.send(json!({"type": "done"})).await?;
-    sink.close().await?;
+    let player = *players
+        .lock()
+        .unwrap()
+        .entry(name)
+        .or_insert_with(Player::new);
 
-    info!("Successfully closed {} ({})", player, addr);
-    Ok(())
+    let mut sink = sink.with(|x: serde_json::Value| future::ok::<_, E>(x.to_string()));
+    let updates = register(player, &mut sink, addr, &events).await?;
+
+    // split into separate function so we can catch errors and send disconnection notices
+    match player_processing_loop(player, &mut sink, stream, updates, &events).await {
+        Ok(_) => {
+            sink.send(json!({"type": "done"})).await?;
+            sink.close().await?;
+
+            info!("Successfully closed {} ({})", player, addr);
+            Ok(())
+        }
+        Err(e) => {
+            if events.send(GameEvent::Disconnect { player }).await.is_err() {
+                debug!("{} failed to send disconnection notice", player);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Implement the main processing loop for a player connection.
+///
+/// Only finishes if either an error occurs or if the game shuts down.
+async fn player_processing_loop<T, R, E>(
+    player: Player,
+    sink: &mut T,
+    mut stream: R,
+    mut updates: broadcast::Receiver<game::Serializer>,
+    events: &mpsc::Sender<GameEvent>,
+) -> Result<()>
+where
+    T: Sink<serde_json::Value, Error = E> + Unpin,
+    R: Stream<Item = Result<String, E>> + Unpin,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    loop {
+        tokio::select! {
+            res = updates.recv() => match res {
+                // TODO: filter to only things relevant for this player?
+                Ok(state) => {
+                    sink.send(json!({"type": "update", "data": state})).await?;
+                },
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    let msg = format!("Lagging behind: skipped {} update(s)", skipped);
+                    warn!("{} {}", player, msg);
+                    sink.send(json!({"type": "warning", "msg": msg})).await?;
+                },
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Ok(());
+                },
+            },
+            packet = stream.next() => match packet {
+                Some(packet) => process_packet(player, packet, sink, events).await?,
+                None => return Err(anyhow!("Far side closed when processing packets.")),
+            },
+        }
+    }
 }
 
 /// Process a packet received from a player.
@@ -275,7 +343,7 @@ where
     /// Type used to parse a frame from the input.
     #[derive(Deserialize)]
     struct ReadFrame {
-        pub bee: BeeID,
+        pub bee: game::BeeID,
         #[serde(default)]
         pub direction: Option<Direction>,
     }

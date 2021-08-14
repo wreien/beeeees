@@ -64,7 +64,7 @@ impl Player {
 
     /// Whether this ID indicates an observer or not.
     #[must_use]
-    pub fn is_observer(&self) -> bool {
+    pub fn is_observer(self) -> bool {
         self.0 == 0
     }
 }
@@ -270,19 +270,28 @@ impl State {
 
     /// Add a player to the game, starting them with a hive and some bees.
     ///
+    /// Does nothing if the given player is already in the game.
+    ///
     /// # Errors
     ///
     /// May fail if there are no more available spawn points.
     pub fn add_player(&mut self, player: Player) -> Result<()> {
         assert!(!player.is_observer());
-        let position = self
-            .spawn_points
-            .pop()
-            .context("Could not add player: no more available spawn points")?;
-        let (hive, bees) = Hive::new(player, position);
-        self.entities.hives.push(hive);
-        self.entities.bees.extend(bees);
+        if self.players().all(|p| p != &player) {
+            let position = self
+                .spawn_points
+                .pop()
+                .context("Could not add player: no more available spawn points")?;
+            let (hive, bees) = Hive::new(player, position);
+            self.entities.hives.push(hive);
+            self.entities.bees.extend(bees);
+        }
         Ok(())
+    }
+
+    /// List all players in the game.
+    pub fn players(&self) -> impl Iterator<Item = &'_ Player> {
+        self.entities.hives.iter().map(|h| &h.player)
     }
 
     /// Perform one game tick. User input is taken in `moves`.
