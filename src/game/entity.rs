@@ -1,8 +1,10 @@
 //! Implementations of entity actions.
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
-use global_counter::primitive::fast::ApproxCounterU64;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 
@@ -14,7 +16,7 @@ use super::{
 /// Uniquely identifies a bee.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct BeeID(u64);
+pub struct BeeID(usize);
 
 impl BeeID {
     /// Create a new bee identifier.
@@ -23,9 +25,9 @@ impl BeeID {
     /// Note that IDs generated will be duplicated across different executions.
     #[must_use]
     pub fn new() -> Self {
-        static BEE_COUNTER: ApproxCounterU64 = ApproxCounterU64::new(0, 20);
-        BEE_COUNTER.inc();
-        BeeID(BEE_COUNTER.get())
+        static BEE_COUNTER: AtomicUsize = AtomicUsize::new(1);
+        let id = BEE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        BeeID(id)
     }
 }
 

@@ -24,10 +24,16 @@
 mod entity;
 pub mod world;
 
-use std::{fmt, ops::RangeInclusive, sync::Arc};
+use std::{
+    fmt,
+    ops::RangeInclusive,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 use anyhow::{Context, Result};
-use global_counter::primitive::exact::CounterU64;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +45,7 @@ use self::world::{Position, World};
 /// Uniquely identifies a player.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct Player(u64);
+pub struct Player(usize);
 
 impl Player {
     /// Create a new player.
@@ -48,8 +54,9 @@ impl Player {
     /// Note that IDs generated will be duplicated across different executions.
     #[must_use]
     pub fn new() -> Self {
-        static PLAYER_COUNTER: CounterU64 = CounterU64::new(1);
-        Player(PLAYER_COUNTER.inc())
+        static PLAYER_COUNTER: AtomicUsize = AtomicUsize::new(1);
+        let id = PLAYER_COUNTER.fetch_add(1, Ordering::Relaxed);
+        Player(id)
     }
 
     /// Create an observer player.
