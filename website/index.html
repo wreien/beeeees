@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en-AU">
+  <head>
+    <meta charset="utf-8">
+    <title>Beeeees</title>
+    <style>
+      #output { overflow: auto; }
+      #output > p { overflow-wrap: break-word; }
+      #output span { color: blue; }
+      #output span.error { color: red; }
+    </style>
+  </head>
+  <body>
+    <h1>Beeeees game</h1>
+    <div id="output"></div>
+
+    <script>
+      var websocket = new WebSocket("ws://" + window.location.host + "/observe");
+      var output = document.querySelector("#output");
+
+      function write(message) {
+        output.insertAdjacentHTML("afterbegin", "<p>" + message + "</p>");
+      }
+
+      websocket.onopen = e => write("CONNECTED");
+      websocket.onclose = e => write("DISCONNECTED");
+      websocket.onmessage = e => write("<span>RESPONSE: " + e.data + "</span>");
+      websocket.onerror = e => write("<span class='error'>ERROR:</span> " + e.data);
+    </script>
+  </body>
+</html>

@@ -5,16 +5,21 @@ mod server;
 
 use std::{
     collections::HashMap,
+    net::SocketAddr,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use anyhow::Result;
+use futures::{future, SinkExt, TryStreamExt};
 use log::{debug, error, info};
 use tokio::{net::TcpListener, signal, sync::mpsc};
 use tokio_util::codec::{Decoder, LinesCodec};
+use warp::{ws::Message, Filter};
 
 use game::{world::World, Config};
+
+use crate::server::handle_observer;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -34,6 +39,56 @@ async fn main() -> Result<()> {
 
     let players = Arc::new(Mutex::new(HashMap::new()));
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel(1);
+
+    let to_websocket = {
+        let events = events_tx.clone();
+        let players = players.clone();
+        let shutdown = shutdown_tx.clone();
+        let shared_state = warp::any()
+            .map(move || (events.clone(), players.clone(), shutdown.clone()))
+            .untuple_one();
+
+        warp::addr::remote()
+            .map(|addr: Option<SocketAddr>| addr.expect("no socket address available"))
+            .and(warp::ws())
+            .and(shared_state)
+    };
+
+    let play = warp::path("play").and(to_websocket.clone()).map(
+        |addr: SocketAddr, ws: warp::ws::Ws, events, players, shutdown| {
+            ws.on_upgrade(move |socket| async move {
+                tokio::spawn(async move {
+                    let socket = socket
+                        .try_take_while(|msg| future::ok(!msg.is_close()))
+                        .try_filter_map(|msg| future::ok(msg.to_str().ok().map(String::from)))
+                        .with(|s: String| future::ok::<_, warp::Error>(Message::text(s)));
+                    let fut = server::handle_player(socket, addr, events, players, shutdown);
+                    if let Err(x) = fut.await {
+                        error!("When handling ws://play for {}: {:?}", addr, x);
+                    }
+                });
+            })
+        },
+    );
+
+    let observe = warp::path("observe").and(to_websocket.clone()).map(
+        |addr: SocketAddr, ws: warp::ws::Ws, events, _, shutdown| {
+            ws.on_upgrade(move |socket| async move {
+                tokio::spawn(async move {
+                    let socket =
+                        socket.with(|s: String| future::ok::<_, warp::Error>(Message::text(s)));
+                    if let Err(x) = handle_observer(socket, addr, events, shutdown).await {
+                        error!("When handling ws://observe for {}: {:?}", addr, x);
+                    }
+                });
+            })
+        },
+    );
+
+    let routes = play.or(observe).or(warp::fs::dir("./website"));
+
+    tokio::spawn(warp::serve(routes).run("127.0.0.1:8080".parse::<SocketAddr>()?));
+
     loop {
         tokio::select! {
             result = listener.accept() => {
@@ -44,15 +99,9 @@ async fn main() -> Result<()> {
                 let shutdown_tx = shutdown_tx.clone();
                 tokio::spawn(async move {
                     info!("Handling new connection with address {}", addr);
-                    let fut = server::handle_player(
-                        socket,
-                        addr,
-                        events_tx,
-                        players,
-                        shutdown_tx,
-                    );
+                    let fut = server::handle_player(socket, addr, events_tx, players, shutdown_tx);
                     if let Err(x) = fut.await {
-                        error!("When handling {}: {:?}", addr, x);
+                        error!("When handling TCP for {}: {:?}", addr, x);
                     }
                 });
             },

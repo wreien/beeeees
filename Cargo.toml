@@ -4,6 +4,7 @@ name = "beeeees"
 version = "0.1.0"
 edition = "2018"
 default-run = "beeeees"
+resolver = "2"
 
 
 [dependencies]
@@ -15,8 +16,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 futures = "0.3"
-tokio = { version = "1.9.0", features = ["full"] }
+tokio = { version = "1.10.0", features = ["full"] }
 tokio-util = { version = "0.6", features = ["full"] }
+warp = "0.3"
 
 log = "0.4"
 env_logger = "0.9"
