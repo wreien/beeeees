@@ -13,7 +13,11 @@ use std::{
 use anyhow::Result;
 use futures::{future, SinkExt, TryStreamExt};
 use log::{debug, error, info};
-use tokio::{net::TcpListener, signal, sync::mpsc};
+use tokio::{
+    net::TcpListener,
+    signal,
+    sync::{mpsc, oneshot},
+};
 use tokio_util::codec::{Decoder, LinesCodec};
 use warp::{ws::Message, Filter};
 
@@ -28,9 +32,8 @@ async fn main() -> Result<()> {
         .parse_default_env()
         .init();
 
-    let addr = "127.0.0.1:49998";
-    let listener = TcpListener::bind(addr).await?;
-    info!("Listening on {}", addr);
+    let tcp_addr: SocketAddr = "127.0.0.1:49998".parse()?;
+    let server_addr: SocketAddr = "0.0.0.0:80".parse()?;
 
     let state = game::State::new(default_world()?, Config::default());
     let tick_rate = Duration::from_secs(2);
@@ -71,7 +74,7 @@ async fn main() -> Result<()> {
         },
     );
 
-    let observe = warp::path("observe").and(to_websocket.clone()).map(
+    let observe = warp::path("observe").and(to_websocket).map(
         |addr: SocketAddr, ws: warp::ws::Ws, events, _, shutdown| {
             ws.on_upgrade(move |socket| async move {
                 tokio::spawn(async move {
@@ -85,13 +88,20 @@ async fn main() -> Result<()> {
         },
     );
 
-    let routes = play.or(observe).or(warp::fs::dir("./website"));
+    let server = warp::serve(play.or(observe).or(warp::fs::dir("./website")));
 
-    tokio::spawn(warp::serve(routes).run("127.0.0.1:8080".parse::<SocketAddr>()?));
+    let (server_shutdown_tx, server_shutdown_rx) = oneshot::channel();
+    let (server_addr, server) = server.bind_with_graceful_shutdown(server_addr, async move {
+        let _ = server_shutdown_rx.await;
+    });
+
+    let tcp_listener = TcpListener::bind(tcp_addr).await?;
+    let server = tokio::spawn(server);
+    info!("Listening on tcp://{} and http://{}", tcp_addr, server_addr);
 
     loop {
         tokio::select! {
-            result = listener.accept() => {
+            result = tcp_listener.accept() => {
                 let (socket, addr) = result?;
                 let socket = LinesCodec::new_with_max_length(8192).framed(socket);
                 let events_tx = events_tx.clone();
@@ -116,6 +126,8 @@ async fn main() -> Result<()> {
     // we ignore any failures, since that just means the server is already closed
     debug!("Requesting server to finish");
     let _ = events_tx.send(server::GameEvent::Finish).await;
+    let _ = server_shutdown_tx.send(());
+    let _ = server.await?;
 
     // wait for all client processes to finish cleanly
     debug!("Waiting for clients to clean up");
