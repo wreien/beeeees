@@ -20,6 +20,126 @@ use crate::game::{
     Player,
 };
 
+/// Used to receive and respond to a shutdown signal.
+#[derive(Debug, Clone)]
+pub struct Shutdown {
+    /// Used to receive a shutdown signal.
+    signal: watch::Receiver<bool>,
+}
+
+impl Shutdown {
+    /// Creates a new shutdown signaller and receiver pair.
+    ///
+    /// Returns a new [`Shutdown`]
+    /// as well as the write half to a `watch` used to initiate the shutdown.
+    fn new() -> (Self, watch::Sender<bool>) {
+        let (shutdown_signal_tx, shutdown_signal_rx) = watch::channel(false);
+        (
+            Self {
+                signal: shutdown_signal_rx,
+            },
+            shutdown_signal_tx,
+        )
+    }
+
+    /// Returns whether a shutdown has been signalled.
+    pub fn should_shutdown(&self) -> bool {
+        *self.signal.borrow()
+    }
+
+    /// Blocks until a shutdown is signalled.
+    ///
+    /// If a shutdown has already been signalled before this is called,
+    /// will return immediately.
+    ///
+    /// This function is cancel-safe;
+    /// that is, it can be used in `tokio::select`
+    /// and if another branch is taken you are guaranteed
+    /// that you haven't missed a notification.
+    pub async fn recv(&mut self) {
+        if self.should_shutdown() {
+            return;
+        }
+
+        let _ = self.signal.changed().await;
+    }
+}
+
+/// Stores the state associated with a client.
+///
+/// Stores the communication channels required to operate a client.
+/// Also manages an instance of a [`Shutdown`]
+/// that can be retrieved using [`ClientState::get_shutdown_notifier`].
+#[derive(Debug, Clone)]
+pub struct ClientState {
+    /// Send events to the current game.
+    events: mpsc::Sender<GameEvent>,
+    /// Map of player names to player IDs.
+    players: Arc<Mutex<HashMap<String, Player>>>,
+    /// Used to receive notifications of impending shutdown.
+    signal: Shutdown,
+    /// Unused; when dropped signals that shutdown has finished successfully.
+    _shutdown_complete: mpsc::Sender<()>,
+}
+
+impl ClientState {
+    /// Get a copy of the shutdown notifier used by the client.
+    pub fn get_shutdown_notifier(&self) -> Shutdown {
+        self.signal.clone()
+    }
+}
+
+/// Data representing a game server.
+///
+/// Created using [`make_game_server`].
+pub struct GameServer<Server: Future, Shutdown: Future> {
+    /// A future used to run the server.
+    pub server: Server,
+    /// Channel information used to communicate with the server.
+    pub client_info: ClientState,
+    /// A future that can be awaited to clean up the server.
+    pub shutdown: Shutdown,
+}
+
+/// Construct a new game server.
+///
+/// Returns a pair with the state used to create and manage new clients,
+/// and a future that can be awaited to initiate a clean shutdown.
+///
+/// After the future completes all clients will have shut down.
+pub fn make_game_server(
+    state: game::State,
+    tick_rate: Duration,
+) -> GameServer<impl Future<Output = ()>, impl Future<Output = ()>> {
+    let (events_tx, events_rx) = mpsc::channel(16);
+    let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel(1);
+    let (signal, shutdown_signal_tx) = Shutdown::new();
+
+    let server = play_game(state, tick_rate, events_rx);
+
+    let client_info = ClientState {
+        events: events_tx.clone(),
+        players: Default::default(),
+        signal,
+        _shutdown_complete: shutdown_complete_tx,
+    };
+
+    let shutdown = async move {
+        debug!("Sending shutdown signal");
+        let _ = shutdown_signal_tx.send(true);
+        let _ = events_tx.send(GameEvent::Finish).await;
+
+        debug!("Waiting for clients to clean up");
+        let _ = shutdown_complete_rx.recv().await;
+    };
+
+    GameServer {
+        server,
+        client_info,
+        shutdown,
+    }
+}
+
 /// The information passed back by the game on successful creation.
 pub type GameEventResponse = (broadcast::Receiver<game::Serializer>, Arc<World>);
 
@@ -63,80 +183,6 @@ pub enum GameEvent {
     Finish,
 }
 
-/// Manages a shutdown
-#[derive(Debug, Clone)]
-pub struct Shutdown {
-    signal: watch::Receiver<bool>,
-}
-
-impl Shutdown {
-    fn new() -> (Self, watch::Sender<bool>) {
-        let (shutdown_signal_tx, shutdown_signal_rx) = watch::channel(false);
-        (
-            Self {
-                signal: shutdown_signal_rx,
-            },
-            shutdown_signal_tx,
-        )
-    }
-
-    pub async fn recv(&mut self) {
-        if *self.signal.borrow() {
-            return;
-        }
-
-        let _ = self.signal.changed().await;
-    }
-}
-
-/// Stores the communication channels required to operate a client.
-#[derive(Debug, Clone)]
-pub struct ClientChannels {
-    events: mpsc::Sender<GameEvent>,
-    players: Arc<Mutex<HashMap<String, Player>>>,
-    signal: Shutdown,
-    _shutdown_complete: mpsc::Sender<()>,
-}
-
-impl ClientChannels {
-    /// Creates a new set of communication channels.
-    ///
-    /// Returns a triple containing:
-    /// - The send half of the channels, used by the server
-    /// - A receiver for game events
-    /// - A future that can be awaited to initiate a clean shutdown
-    ///
-    /// When the returned future completes all clients should have cleaned up.
-    #[must_use]
-    pub fn new() -> (Self, mpsc::Receiver<GameEvent>, impl Future) {
-        let (events_tx, events_rx) = mpsc::channel(16);
-        let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel(1);
-        let (signal, shutdown_signal_tx) = Shutdown::new();
-
-        let result = Self {
-            events: events_tx.clone(),
-            players: Default::default(),
-            signal,
-            _shutdown_complete: shutdown_complete_tx,
-        };
-
-        let initiate_shutdown = async move {
-            debug!("Sending shutdown signal");
-            let _ = shutdown_signal_tx.send(true);
-            let _ = events_tx.send(GameEvent::Finish).await;
-
-            debug!("Waiting for clients to clean up");
-            let _ = shutdown_complete_rx.recv().await;
-        };
-
-        (result, events_rx, initiate_shutdown)
-    }
-
-    pub fn get_shutdown_notifier(&self) -> Shutdown {
-        self.signal.clone()
-    }
-}
-
 /// Runs an instance of the game.
 ///
 /// Will update the game `state` at a constant rate,
@@ -152,7 +198,7 @@ impl ClientChannels {
 /// that is, rather than tick at a constant speed and leave players behind,
 /// always tick at the rate of the slowest connection
 /// (with `tick_rate` as a maximum speed).
-pub async fn play_game(
+async fn play_game(
     mut state: game::State,
     tick_rate: Duration,
     mut events: mpsc::Receiver<GameEvent>,
@@ -274,11 +320,7 @@ where
 /// The `events` is used to subscribe to the associated game.
 ///
 /// The `_shutdown` channel is used to determine when the client has closed cleanly.
-pub async fn handle_observer<S, E>(
-    socket: S,
-    addr: SocketAddr,
-    channels: ClientChannels,
-) -> Result<()>
+pub async fn handle_observer<S, E>(socket: S, addr: SocketAddr, channels: ClientState) -> Result<()>
 where
     S: Sink<String, Error = E> + Unpin,
     E: std::error::Error + Send + Sync + 'static,
@@ -311,11 +353,7 @@ where
 /// Transmits events to the associated game using `events`.
 ///
 /// The `_shutdown` channel is used to determine when the client has closed cleanly.
-pub async fn handle_player<S, E>(
-    socket: S,
-    addr: SocketAddr,
-    channels: ClientChannels,
-) -> Result<()>
+pub async fn handle_player<S, E>(socket: S, addr: SocketAddr, channels: ClientState) -> Result<()>
 where
     S: Stream<Item = Result<String, E>> + Sink<String, Error = E> + Unpin,
     E: std::error::Error + Send + Sync + 'static,
@@ -352,7 +390,7 @@ where
         return handle_observer(sink, addr, channels).await;
     }
 
-    let ClientChannels {
+    let ClientState {
         events, players, ..
     } = channels;
 

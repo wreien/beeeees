@@ -12,11 +12,6 @@ use tokio::{net::TcpListener, signal};
 use tokio_util::codec::{Decoder, LinesCodec};
 use warp::{ws::Message, Filter};
 
-use crate::{
-    game::{world::World, Config},
-    server::{handle_observer, handle_player},
-};
-
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::Builder::new()
@@ -25,37 +20,37 @@ async fn main() -> Result<()> {
         .init();
 
     let tcp_addr: SocketAddr = "127.0.0.1:49998".parse()?;
-    let web_addr: SocketAddr = "0.0.0.0:80".parse()?;
+    let web_addr: SocketAddr = "127.0.0.1:8080".parse()?;
 
-    let (channels, events, shutdown) = server::ClientChannels::new();
-
-    let state = game::State::new(default_world()?, Config::default());
+    let state = game::State::new(default_world()?, game::Config::default());
     let tick_rate = Duration::from_secs(2);
-    let game_server = tokio::spawn(server::play_game(state, tick_rate, events));
 
-    let tcpserver = tokio::spawn(make_tcp_server(tcp_addr, channels.clone()));
-    let webserver = tokio::spawn(make_web_server(web_addr, channels.clone()));
+    let game_server = server::make_game_server(state, tick_rate);
+    tokio::spawn(game_server.server);
+
+    let client_info = game_server.client_info;
+    let tcpserver = tokio::spawn(make_tcp_server(tcp_addr, client_info.clone()));
+    let webserver = tokio::spawn(make_web_server(web_addr, client_info.clone()));
     info!("Listening on tcp://{} and http://{}", tcp_addr, web_addr);
 
     // we're done with the channels, drop now to assist in cleanup later
-    drop(channels);
+    drop(client_info);
 
     let _ = signal::ctrl_c().await;
 
     info!("Interrupt requested, cleaning up...");
-    shutdown.await;
+    game_server.shutdown.await;
 
     debug!("Ensuring external servers have cleaned up");
     let _ = webserver.await?;
     let _ = tcpserver.await?;
-    let _ = game_server.await?;
 
     Ok(())
 }
 
-async fn make_tcp_server(addr: SocketAddr, channels: server::ClientChannels) -> Result<()> {
+async fn make_tcp_server(addr: SocketAddr, client_info: server::ClientState) -> Result<()> {
     let tcp_listener = TcpListener::bind(addr).await?;
-    let mut shutdown = channels.get_shutdown_notifier();
+    let mut shutdown = client_info.get_shutdown_notifier();
 
     loop {
         let (socket, addr) = tokio::select! {
@@ -64,7 +59,7 @@ async fn make_tcp_server(addr: SocketAddr, channels: server::ClientChannels) -> 
         };
 
         let socket = LinesCodec::new_with_max_length(8192).framed(socket);
-        let channels = channels.clone();
+        let channels = client_info.clone();
         tokio::spawn(async move {
             info!("Handling new connection with address {}", addr);
             if let Err(x) = server::handle_player(socket, addr, channels).await {
@@ -77,13 +72,13 @@ async fn make_tcp_server(addr: SocketAddr, channels: server::ClientChannels) -> 
     Ok(())
 }
 
-fn make_web_server(addr: SocketAddr, channels: server::ClientChannels) -> impl Future<Output = ()> {
-    let mut signal = channels.get_shutdown_notifier();
+fn make_web_server(addr: SocketAddr, client_info: server::ClientState) -> impl Future<Output = ()> {
+    let mut signal = client_info.get_shutdown_notifier();
 
     let to_websocket = warp::addr::remote()
         .map(|addr: Option<SocketAddr>| addr.expect("no socket address available"))
         .and(warp::ws())
-        .and(warp::any().map(move || channels.clone()));
+        .and(warp::any().map(move || client_info.clone()));
 
     let play = warp::path("play").and(to_websocket.clone()).map(
         |addr: SocketAddr, ws: warp::ws::Ws, channels| {
@@ -93,7 +88,7 @@ fn make_web_server(addr: SocketAddr, channels: server::ClientChannels) -> impl F
                         .try_take_while(|msg| future::ok(!msg.is_close()))
                         .try_filter_map(|msg| future::ok(msg.to_str().ok().map(String::from)))
                         .with(|s: String| future::ok::<_, warp::Error>(Message::text(s)));
-                    if let Err(x) = handle_player(socket, addr, channels).await {
+                    if let Err(x) = server::handle_player(socket, addr, channels).await {
                         error!("When handling ws://./play for {}: {:?}", addr, x);
                     }
                 });
@@ -107,7 +102,7 @@ fn make_web_server(addr: SocketAddr, channels: server::ClientChannels) -> impl F
                 tokio::spawn(async move {
                     let socket =
                         socket.with(|s: String| future::ok::<_, warp::Error>(Message::text(s)));
-                    if let Err(x) = handle_observer(socket, addr, channels).await {
+                    if let Err(x) = server::handle_observer(socket, addr, channels).await {
                         error!("When handling ws://./observe for {}: {:?}", addr, x);
                     }
                 });
@@ -126,8 +121,8 @@ fn make_web_server(addr: SocketAddr, channels: server::ClientChannels) -> impl F
 }
 
 #[rustfmt::skip]
-fn default_world() -> Result<World> {
-    use game::world::Tile::*;
+fn default_world() -> Result<game::world::World> {
+    use game::world::{World, Tile::*};
     World::new(4, 4, vec![
         Grass, Grass, Grass, Grass,
         Grass, SpawnPoint, Grass, Grass,
