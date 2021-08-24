@@ -42,19 +42,19 @@ async fn main() -> Result<()> {
     game_server.shutdown.await;
 
     debug!("Ensuring external servers have cleaned up");
-    let _ = webserver.await?;
-    let _ = tcpserver.await?;
+    webserver.await?;
+    tcpserver.await?;
 
     Ok(())
 }
 
-async fn make_tcp_server(addr: SocketAddr, client_info: server::ClientState) -> Result<()> {
-    let tcp_listener = TcpListener::bind(addr).await?;
+async fn make_tcp_server(addr: SocketAddr, client_info: server::ClientState) {
+    let tcp_listener = TcpListener::bind(addr).await.expect("Couldn't bind to address");
     let mut shutdown = client_info.get_shutdown_notifier();
 
     loop {
         let (socket, addr) = tokio::select! {
-            result = tcp_listener.accept() => result?,
+            result = tcp_listener.accept() => result.expect("Couldn't accept new client"),
             _ = shutdown.recv() => break,
         };
 
@@ -69,7 +69,6 @@ async fn make_tcp_server(addr: SocketAddr, client_info: server::ClientState) -> 
     }
 
     debug!("TCP server shutting down");
-    Ok(())
 }
 
 fn make_web_server(addr: SocketAddr, client_info: server::ClientState) -> impl Future<Output = ()> {
@@ -113,8 +112,8 @@ fn make_web_server(addr: SocketAddr, client_info: server::ClientState) -> impl F
     let server = warp::serve(play.or(observe).or(warp::fs::dir("./website")));
 
     let (_, server) = server.bind_with_graceful_shutdown(addr, async move {
-        let _ = signal.recv().await;
-        debug!("Web server shutting down")
+        signal.recv().await;
+        debug!("Web server shutting down");
     });
 
     server
