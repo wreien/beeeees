@@ -8,9 +8,26 @@ use std::{net::SocketAddr, time::Duration};
 use anyhow::Result;
 use futures::{future, Future, SinkExt, TryStreamExt};
 use log::{debug, error, info};
+use structopt::StructOpt;
 use tokio::{net::TcpListener, signal};
 use tokio_util::codec::{Decoder, LinesCodec};
 use warp::{ws::Message, Filter};
+
+/// Simple bees game.
+///
+/// A coöperative multiplayer game, where players must control swarms of bees
+/// to collect as much pollen as possible. Developed for Reboot 2021.
+#[derive(Debug, StructOpt)]
+#[structopt(name = "beeeees", version_short = "v")]
+struct Opts {
+    /// Address to bind the TCP listener.
+    #[structopt(short, long, default_value = "127.0.0.1:49998")]
+    tcp_addr: SocketAddr,
+
+    /// Address to host the website.
+    #[structopt(short, long, default_value = "127.0.0.1:8080")]
+    web_addr: SocketAddr,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -19,8 +36,7 @@ async fn main() -> Result<()> {
         .parse_default_env()
         .init();
 
-    let tcp_addr: SocketAddr = "127.0.0.1:49998".parse()?;
-    let web_addr: SocketAddr = "127.0.0.1:8080".parse()?;
+    let Opts { tcp_addr, web_addr } = Opts::from_args();
 
     let state = game::State::new(default_world()?, game::Config::default());
     let tick_rate = Duration::from_secs(2);
@@ -49,7 +65,9 @@ async fn main() -> Result<()> {
 }
 
 async fn make_tcp_server(addr: SocketAddr, client_info: server::ClientState) {
-    let tcp_listener = TcpListener::bind(addr).await.expect("Couldn't bind to address");
+    let tcp_listener = TcpListener::bind(addr)
+        .await
+        .expect("Couldn't bind to address");
     let mut shutdown = client_info.get_shutdown_notifier();
 
     loop {
