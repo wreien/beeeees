@@ -33,7 +33,7 @@ use std::{
     },
 };
 
-use anyhow::{Context, Result};
+use anyhow::Context;
 use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -93,13 +93,16 @@ impl fmt::Display for Player {
 }
 
 /// Configure game rules and constants.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Config {
     /// Chance that a flower will spawn each turn.
+    #[serde(deserialize_with = "deserialize_chance")]
     pub flower_spawn_chance: f64,
     /// The initial pollen value for a newly spawned flower.
     pub flower_initial_pollen: RangeInclusive<i32>,
     /// How likely a player is to spawn a new bee each turn.
+    #[serde(deserialize_with = "deserialize_chance")]
     pub bee_spawn_chance: f64,
 }
 
@@ -110,6 +113,17 @@ impl Default for Config {
             flower_initial_pollen: 3..=5,
             bee_spawn_chance: 0.03,
         }
+    }
+}
+
+fn deserialize_chance<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+    let v = f64::deserialize(deserializer)?;
+    if v >= 0.0 && v <= 1.0 {
+        Ok(v)
+    } else {
+        use serde::de::{Error, Unexpected};
+        let msg = &"a float in range [0, 1]";
+        Err(Error::invalid_value(Unexpected::Float(v), msg))
     }
 }
 
@@ -282,7 +296,7 @@ impl State {
     /// # Errors
     ///
     /// May fail if there are no more available spawn points.
-    pub fn add_player(&mut self, player: Player) -> Result<()> {
+    pub fn add_player(&mut self, player: Player) -> anyhow::Result<()> {
         assert!(!player.is_observer());
         if self.players().all(|p| p != &player) {
             let position = self

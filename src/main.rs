@@ -3,12 +3,12 @@
 mod game;
 mod server;
 
-use std::{net::SocketAddr, time::Duration};
+use std::{fs::File, io::BufReader, net::SocketAddr, path::PathBuf, time::Duration};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use futures::{future, Future, SinkExt, TryStreamExt};
 use log::{debug, error, info};
-use structopt::StructOpt;
+use structopt::{clap::AppSettings, StructOpt};
 use tokio::{net::TcpListener, signal};
 use tokio_util::codec::{Decoder, LinesCodec};
 use warp::{ws::Message, Filter};
@@ -18,14 +18,27 @@ use warp::{ws::Message, Filter};
 /// A coöperative multiplayer game, where players must control swarms of bees
 /// to collect as much pollen as possible. Developed for Reboot 2021.
 #[derive(Debug, StructOpt)]
-#[structopt(name = "beeeees", version_short = "v")]
+#[structopt(
+    name = "beeeees",
+    version_short = "v",
+    setting(AppSettings::UnifiedHelpMessage),
+    setting(AppSettings::DeriveDisplayOrder),
+)]
 struct Opts {
+    /// Path to a config file with game parameters.
+    #[structopt(short, long, parse(from_os_str), value_name = "FILE")]
+    config: Option<PathBuf>,
+
+    /// Dump all currently active config options to the given file, overwriting it.
+    #[structopt(short, long, parse(from_os_str), value_name = "FILE")]
+    dump_config: Option<PathBuf>,
+
     /// Address to bind the TCP listener.
-    #[structopt(short, long, default_value = "127.0.0.1:49998")]
+    #[structopt(short, long, default_value = "127.0.0.1:49998", value_name = "ADDRESS")]
     tcp_addr: SocketAddr,
 
     /// Address to host the website.
-    #[structopt(short, long, default_value = "127.0.0.1:8080")]
+    #[structopt(short, long, default_value = "127.0.0.1:8080", value_name = "ADDRESS")]
     web_addr: SocketAddr,
 }
 
@@ -36,9 +49,31 @@ async fn main() -> Result<()> {
         .parse_default_env()
         .init();
 
-    let Opts { tcp_addr, web_addr } = Opts::from_args();
+    let Opts {
+        config,
+        dump_config,
+        tcp_addr,
+        web_addr,
+    } = Opts::from_args();
 
-    let state = game::State::new(default_world()?, game::Config::default());
+    let config = config
+        .map(|path| {
+            // using std (blocking) types is OK here, as we have not started any async work
+            let buf = BufReader::new(File::open(path).context("Could not open config file")?);
+            serde_json::from_reader(buf).context("Could not parse config file")
+        })
+        .unwrap_or_else(|| Ok(Default::default()));
+    let config = config?;
+
+    if let Some(path) = dump_config {
+        let file = File::create(&path).context("Could not create config dump file")?;
+        serde_json::to_writer_pretty(file, &config).context("Could not write config file")?;
+        let path = path.to_string_lossy();
+        println!("Dumped current configuration options to {}", path);
+        return Ok(());
+    }
+
+    let state = game::State::new(default_world()?, config);
     let tick_rate = Duration::from_secs(2);
 
     let game_server = server::make_game_server(state, tick_rate);
