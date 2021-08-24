@@ -20,18 +20,23 @@ wherever you cloned this repository.
 Use the following command to build and run the server on your machine.
 This should install all required dependencies for you.
 ```sh
-cargo run --release
+cargo run
 ```
+
+When running, the server hosts a very simple website frontend on your machine.
+By default you may access it by navigating to http://127.0.0.1:8080/.
 
 There is also a very rudimentary "echo" client
 you can use to interact with the server.
 You can run it using:
 ```sh
-cargo run --bin echo --release
+cargo run --bin echo
 ```
 
+The above will run in debug mode; 
+you may additionally pass `--release` to enable compiler optimisations.
+
 **TODO:** proper client programs (in python?)
-and website frontend (just a static JS thing, hopefully, though maybe node?).
 
 ## Documentation
 
@@ -59,3 +64,15 @@ env RUST_LOG=warn cargo run     # only log warnings and error messages
 
 See [the `env_logger` documentation](https://docs.rs/env_logger)
 for more details.
+
+## Configuration
+
+Currently the server allows some very simple configuration
+via command-line parameters. 
+You may explore the available options using
+```sh
+cargo run -- --help
+```
+
+Note the initial `--` required to separate 
+arguments to `cargo` from arguments to the server.
