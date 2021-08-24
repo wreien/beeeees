@@ -63,6 +63,35 @@ pub enum GameEvent {
     Finish,
 }
 
+/// Stores the communication channels required to operate a client.
+#[derive(Debug, Clone)]
+pub struct ClientChannels {
+    pub events: mpsc::Sender<GameEvent>,
+    pub players: Arc<Mutex<HashMap<String, Player>>>,
+    pub shutdown: mpsc::Sender<()>,
+}
+
+impl ClientChannels {
+    /// Creates a new set of communication channels.
+    /// 
+    /// Returns a triple containing:
+    /// - The send half of the channels, used by the server
+    /// - A receiver for game events
+    /// - A receiver used to pause until shutdown
+    #[must_use]
+    pub fn new() -> (Self, mpsc::Receiver<GameEvent>, mpsc::Receiver<()>) {
+        let (events_tx, events_rx) = mpsc::channel(16);
+        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
+        let result = Self { 
+            events: events_tx,
+            players: Default::default(),
+            shutdown: shutdown_tx,
+        };
+
+        (result, events_rx, shutdown_rx)
+    }
+}
+
 /// Runs an instance of the game.
 ///
 /// Will update the game `state` at a constant rate,
@@ -70,6 +99,14 @@ pub enum GameEvent {
 /// User input can be provided via `events`,
 /// and the current game state will be regularly broadcast via `updates`.
 /// If the `events` channel closes the game will finish.
+///
+/// # TODO
+///
+/// Support a "client-driven" pipeline
+/// instead of the existing "server-driven" one;
+/// that is, rather than tick at a constant speed and leave players behind,
+/// always tick at the rate of the slowest connection
+/// (with `tick_rate` as a maximum speed).
 pub async fn play_game(
     mut state: game::State,
     tick_rate: Duration,
@@ -195,13 +232,13 @@ where
 pub async fn handle_observer<S, E>(
     socket: S,
     addr: SocketAddr,
-    events: mpsc::Sender<GameEvent>,
-    _shutdown: mpsc::Sender<()>,
+    channels: ClientChannels,
 ) -> Result<()>
 where
     S: Sink<String, Error = E> + Unpin,
     E: std::error::Error + Send + Sync + 'static,
 {
+    let events = channels.events;
     let mut sink = socket.with(|x: serde_json::Value| future::ok::<_, E>(x.to_string()));
     let mut updates = register(Player::observer(), &mut sink, addr, &events).await?;
 
@@ -232,9 +269,7 @@ where
 pub async fn handle_player<S, E>(
     socket: S,
     addr: SocketAddr,
-    events: mpsc::Sender<GameEvent>,
-    players: Arc<Mutex<HashMap<String, Player>>>,
-    _shutdown: mpsc::Sender<()>,
+    channels: ClientChannels,
 ) -> Result<()>
 where
     S: Stream<Item = Result<String, E>> + Sink<String, Error = E> + Unpin,
@@ -257,8 +292,10 @@ where
 
     if name.is_empty() {
         warn!("No name provided, downgrading {} to observer", addr);
-        return handle_observer(sink, addr, events, _shutdown).await;
+        return handle_observer(sink, addr, channels).await;
     }
+
+    let ClientChannels { events, players, .. } = channels;
 
     let player = *players
         .lock()
