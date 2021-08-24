@@ -8,11 +8,11 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
-use futures::{future, Sink, SinkExt, Stream, StreamExt};
+use futures::{future, Future, Sink, SinkExt, Stream, StreamExt};
 use log::{debug, info, trace, warn};
 use serde::Deserialize;
 use serde_json::json;
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use crate::game::{
     self,
@@ -63,32 +63,77 @@ pub enum GameEvent {
     Finish,
 }
 
+/// Manages a shutdown
+#[derive(Debug, Clone)]
+pub struct Shutdown {
+    signal: watch::Receiver<bool>,
+}
+
+impl Shutdown {
+    fn new() -> (Self, watch::Sender<bool>) {
+        let (shutdown_signal_tx, shutdown_signal_rx) = watch::channel(false);
+        (
+            Self {
+                signal: shutdown_signal_rx,
+            },
+            shutdown_signal_tx,
+        )
+    }
+
+    pub async fn recv(&mut self) {
+        if *self.signal.borrow() {
+            return;
+        }
+
+        let _ = self.signal.changed().await;
+    }
+}
+
 /// Stores the communication channels required to operate a client.
 #[derive(Debug, Clone)]
 pub struct ClientChannels {
-    pub events: mpsc::Sender<GameEvent>,
-    pub players: Arc<Mutex<HashMap<String, Player>>>,
-    pub shutdown: mpsc::Sender<()>,
+    events: mpsc::Sender<GameEvent>,
+    players: Arc<Mutex<HashMap<String, Player>>>,
+    signal: Shutdown,
+    _shutdown_complete: mpsc::Sender<()>,
 }
 
 impl ClientChannels {
     /// Creates a new set of communication channels.
-    /// 
+    ///
     /// Returns a triple containing:
     /// - The send half of the channels, used by the server
     /// - A receiver for game events
-    /// - A receiver used to pause until shutdown
+    /// - A future that can be awaited to initiate a clean shutdown
+    ///
+    /// When the returned future completes all clients should have cleaned up.
     #[must_use]
-    pub fn new() -> (Self, mpsc::Receiver<GameEvent>, mpsc::Receiver<()>) {
+    pub fn new() -> (Self, mpsc::Receiver<GameEvent>, impl Future) {
         let (events_tx, events_rx) = mpsc::channel(16);
-        let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
-        let result = Self { 
-            events: events_tx,
+        let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel(1);
+        let (signal, shutdown_signal_tx) = Shutdown::new();
+
+        let result = Self {
+            events: events_tx.clone(),
             players: Default::default(),
-            shutdown: shutdown_tx,
+            signal,
+            _shutdown_complete: shutdown_complete_tx,
         };
 
-        (result, events_rx, shutdown_rx)
+        let initiate_shutdown = async move {
+            debug!("Sending shutdown signal");
+            let _ = shutdown_signal_tx.send(true);
+            let _ = events_tx.send(GameEvent::Finish).await;
+
+            debug!("Waiting for clients to clean up");
+            let _ = shutdown_complete_rx.recv().await;
+        };
+
+        (result, events_rx, initiate_shutdown)
+    }
+
+    pub fn get_shutdown_notifier(&self) -> Shutdown {
+        self.signal.clone()
     }
 }
 
@@ -275,8 +320,20 @@ where
     S: Stream<Item = Result<String, E>> + Sink<String, Error = E> + Unpin,
     E: std::error::Error + Send + Sync + 'static,
 {
+    let mut shutdown = channels.get_shutdown_notifier();
     let (mut sink, mut stream) = socket.split();
-    let name = match stream.next().await {
+
+    let packet = tokio::select! {
+        packet = stream.next() => packet,
+        _ = shutdown.recv() => {
+            sink.send(json!({"type": "error", "msg": "Game already finished"}).to_string())
+                .await?;
+            sink.close().await?;
+            return Ok(());
+        },
+    };
+
+    let name = match packet {
         Some(Ok(name)) => name,
         Some(Err(e)) => {
             let msg = e.to_string();
@@ -295,7 +352,9 @@ where
         return handle_observer(sink, addr, channels).await;
     }
 
-    let ClientChannels { events, players, .. } = channels;
+    let ClientChannels {
+        events, players, ..
+    } = channels;
 
     let player = *players
         .lock()

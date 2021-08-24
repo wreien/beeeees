@@ -8,7 +8,7 @@ use std::{net::SocketAddr, time::Duration};
 use anyhow::Result;
 use futures::{future, Future, SinkExt, TryStreamExt};
 use log::{debug, error, info};
-use tokio::{net::TcpListener, signal, sync::oneshot};
+use tokio::{net::TcpListener, signal};
 use tokio_util::codec::{Decoder, LinesCodec};
 use warp::{ws::Message, Filter};
 
@@ -27,76 +27,59 @@ async fn main() -> Result<()> {
     let tcp_addr: SocketAddr = "127.0.0.1:49998".parse()?;
     let web_addr: SocketAddr = "0.0.0.0:80".parse()?;
 
-    let (channels, events, mut clients_completed) = server::ClientChannels::new();
+    let (channels, events, shutdown) = server::ClientChannels::new();
 
     let state = game::State::new(default_world()?, Config::default());
     let tick_rate = Duration::from_secs(2);
     let game_server = tokio::spawn(server::play_game(state, tick_rate, events));
 
-    let (webserver, web_addr, webserver_shutdown_tx) = make_webserver(web_addr, channels.clone());
-    let (tcpserver, tcpserver_shutdown_tx) = make_tcp_server(tcp_addr, channels.clone());
-
-    let webserver = tokio::spawn(webserver);
-    let tcpserver = tokio::spawn(tcpserver);
+    let tcpserver = tokio::spawn(make_tcp_server(tcp_addr, channels.clone()));
+    let webserver = tokio::spawn(make_web_server(web_addr, channels.clone()));
     info!("Listening on tcp://{} and http://{}", tcp_addr, web_addr);
 
+    // we're done with the channels, drop now to assist in cleanup later
+    drop(channels);
+
     let _ = signal::ctrl_c().await;
+
     info!("Interrupt requested, cleaning up...");
+    shutdown.await;
 
-    // stop any currently running game server
-    // we ignore any failures, since that just means the server is already closed
-    debug!("Requesting server to finish");
-    let _ = channels.events.send(server::GameEvent::Finish).await;
-    let _ = webserver_shutdown_tx.send(());
-    let _ = tcpserver_shutdown_tx.send(());
-
+    debug!("Ensuring external servers have cleaned up");
     let _ = webserver.await?;
     let _ = tcpserver.await?;
     let _ = game_server.await?;
 
-    // wait for all client processes to finish cleanly
-    debug!("Waiting for clients to clean up");
-    drop(channels);
-    let _ = clients_completed.recv().await;
-
     Ok(())
 }
 
-fn make_tcp_server(addr: SocketAddr, channels: server::ClientChannels) 
-    -> (impl Future<Output = Result<()>>, oneshot::Sender<()>)
-{
-    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+async fn make_tcp_server(addr: SocketAddr, channels: server::ClientChannels) -> Result<()> {
+    let tcp_listener = TcpListener::bind(addr).await?;
+    let mut shutdown = channels.get_shutdown_notifier();
 
-    let fut = async move {
-        let tcp_listener = TcpListener::bind(addr).await?;
+    loop {
+        let (socket, addr) = tokio::select! {
+            result = tcp_listener.accept() => result?,
+            _ = shutdown.recv() => break,
+        };
 
-        loop {
-            let (socket, addr) = tokio::select! {
-                result = tcp_listener.accept() => result?,
-                _ = &mut shutdown_rx => break,
-            };
-            
-            let socket = LinesCodec::new_with_max_length(8192).framed(socket);
-            let channels = channels.clone();
-            tokio::spawn(async move {
-                info!("Handling new connection with address {}", addr);
-                if let Err(x) = server::handle_player(socket, addr, channels).await {
-                    error!("When handling TCP for {}: {:?}", addr, x);
-                }
-            });
-        }
+        let socket = LinesCodec::new_with_max_length(8192).framed(socket);
+        let channels = channels.clone();
+        tokio::spawn(async move {
+            info!("Handling new connection with address {}", addr);
+            if let Err(x) = server::handle_player(socket, addr, channels).await {
+                error!("When handling TCP for {}: {:?}", addr, x);
+            }
+        });
+    }
 
-        debug!("TCP server shutting down");
-        Ok(())
-    };
-
-    (fut, shutdown_tx)
+    debug!("TCP server shutting down");
+    Ok(())
 }
 
-fn make_webserver(
-    addr: SocketAddr,
-    channels: server::ClientChannels,
-) -> (impl Future<Output = ()>, SocketAddr, oneshot::Sender<()>) {
+fn make_web_server(addr: SocketAddr, channels: server::ClientChannels) -> impl Future<Output = ()> {
+    let mut signal = channels.get_shutdown_notifier();
+
     let to_websocket = warp::addr::remote()
         .map(|addr: Option<SocketAddr>| addr.expect("no socket address available"))
         .and(warp::ws())
@@ -111,7 +94,7 @@ fn make_webserver(
                         .try_filter_map(|msg| future::ok(msg.to_str().ok().map(String::from)))
                         .with(|s: String| future::ok::<_, warp::Error>(Message::text(s)));
                     if let Err(x) = handle_player(socket, addr, channels).await {
-                        error!("When handling ws://play for {}: {:?}", addr, x);
+                        error!("When handling ws://./play for {}: {:?}", addr, x);
                     }
                 });
             })
@@ -125,7 +108,7 @@ fn make_webserver(
                     let socket =
                         socket.with(|s: String| future::ok::<_, warp::Error>(Message::text(s)));
                     if let Err(x) = handle_observer(socket, addr, channels).await {
-                        error!("When handling ws://observe for {}: {:?}", addr, x);
+                        error!("When handling ws://./observe for {}: {:?}", addr, x);
                     }
                 });
             })
@@ -134,13 +117,12 @@ fn make_webserver(
 
     let server = warp::serve(play.or(observe).or(warp::fs::dir("./website")));
 
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let (addr, server) = server.bind_with_graceful_shutdown(addr, async move {
-        let _ = shutdown_rx.await;
+    let (_, server) = server.bind_with_graceful_shutdown(addr, async move {
+        let _ = signal.recv().await;
         debug!("Web server shutting down")
     });
 
-    (server, addr, shutdown_tx)
+    server
 }
 
 #[rustfmt::skip]
