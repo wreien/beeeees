@@ -96,6 +96,8 @@ impl fmt::Display for Player {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// The tile map used by the game.
+    pub world: World,
     /// Chance that a flower will spawn each turn.
     #[serde(deserialize_with = "deserialize_chance")]
     pub flower_spawn_chance: f64,
@@ -112,13 +114,14 @@ impl Default for Config {
             flower_spawn_chance: 0.05,
             flower_initial_pollen: 3..=5,
             bee_spawn_chance: 0.03,
+            world: World::default(),
         }
     }
 }
 
 fn deserialize_chance<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
     let v = f64::deserialize(deserializer)?;
-    if v >= 0.0 && v <= 1.0 {
+    if (0.0..=1.0).contains(&v) {
         Ok(v)
     } else {
         use serde::de::{Error, Unexpected};
@@ -160,13 +163,9 @@ impl Entities {
     }
 
     /// Perform one game tick. See also [`State::tick`].
-    fn tick<R: Rng + ?Sized>(
-        &mut self,
-        config: &Config,
-        rng: &mut R,
-        world: &World,
-        moves: &Moves,
-    ) {
+    fn tick<R: Rng + ?Sized>(&mut self, config: &Config, rng: &mut R, moves: &Moves) {
+        let world = &config.world;
+
         // move animated entities
         for bee in &mut self.bees {
             bee.step(moves, world);
@@ -210,9 +209,6 @@ impl Entities {
 /// The current game state.
 #[derive(Debug)]
 pub struct State {
-    /// The tile map.
-    world: World,
-
     /// Configuration for parameters and chances.
     config: Config,
     /// Available spawn points remaining.
@@ -227,15 +223,14 @@ pub struct State {
 impl State {
     /// Create a new game.
     #[must_use]
-    pub fn new(world: World, config: Config) -> State {
-        let spawn_points = world.get_spawn_points();
+    pub fn new(config: Config) -> State {
+        let spawn_points = config.world.get_spawn_points();
         let mut rng = StdRng::from_entropy();
 
         // TODO: generate a bunch of entities to start with
-        let entities = Entities::new(&mut rng, &world);
+        let entities = Entities::new(&mut rng, &config.world);
 
         State {
-            world,
             config,
             spawn_points,
             rng,
@@ -246,7 +241,7 @@ impl State {
     /// View the state's world information.
     #[must_use]
     pub fn world(&self) -> &world::World {
-        &self.world
+        &self.config.world
     }
 
     /// Get the current score of pollen collected.
@@ -317,8 +312,7 @@ impl State {
 
     /// Perform one game tick. User input is taken in `moves`.
     pub fn tick(&mut self, moves: &Moves) {
-        self.entities
-            .tick(&self.config, &mut self.rng, &self.world, moves)
+        self.entities.tick(&self.config, &mut self.rng, moves)
     }
 }
 

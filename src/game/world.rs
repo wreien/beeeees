@@ -226,6 +226,22 @@ impl World {
     }
 }
 
+impl Default for World {
+    #[rustfmt::skip]
+    fn default() -> Self {
+        use Tile::{Grass as g, SpawnPoint as S};
+        World::new(7, 7, vec![
+            g, g, g, g, g, g, g,
+            g, S, g, g, g, g, g,
+            g, g, g, g, g, g, g,
+            g, g, g, g, g, S, g,
+            g, g, g, g, g, g, g,
+            g, S, g, g, g, g, g,
+            g, g, g, g, g, g, g,
+        ]).expect("Failed to create default world")
+    }
+}
+
 #[derive(Deserialize)]
 struct WorldDeserializer {
     width: i32,

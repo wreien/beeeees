@@ -22,7 +22,7 @@ use warp::{ws::Message, Filter};
     name = "beeeees",
     version_short = "v",
     setting(AppSettings::UnifiedHelpMessage),
-    setting(AppSettings::DeriveDisplayOrder),
+    setting(AppSettings::DeriveDisplayOrder)
 )]
 struct Opts {
     /// Path to a config file with game parameters.
@@ -56,13 +56,14 @@ async fn main() -> Result<()> {
         web_addr,
     } = Opts::from_args();
 
-    let config = config
-        .map(|path| {
+    let config = config.map_or_else(
+        || Ok(game::Config::default()),
+        |path| {
             // using std (blocking) types is OK here, as we have not started any async work
             let buf = BufReader::new(File::open(path).context("Could not open config file")?);
             serde_json::from_reader(buf).context("Could not parse config file")
-        })
-        .unwrap_or_else(|| Ok(Default::default()));
+        },
+    );
     let config = config?;
 
     if let Some(path) = dump_config {
@@ -73,7 +74,7 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let state = game::State::new(default_world()?, config);
+    let state = game::State::new(config);
     let tick_rate = Duration::from_secs(2);
 
     let game_server = server::make_game_server(state, tick_rate);
@@ -170,15 +171,4 @@ fn make_web_server(addr: SocketAddr, client_info: server::ClientState) -> impl F
     });
 
     server
-}
-
-#[rustfmt::skip]
-fn default_world() -> Result<game::world::World> {
-    use game::world::{World, Tile::*};
-    World::new(4, 4, vec![
-        Grass, Grass, Grass, Grass,
-        Grass, SpawnPoint, Grass, Grass,
-        Grass, Grass, SpawnPoint, Grass,
-        Grass, Grass, Grass, Grass,
-    ])
 }
