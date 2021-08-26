@@ -33,7 +33,7 @@ You can run it using:
 cargo run --bin echo
 ```
 
-The above will run in debug mode; 
+The above will run in debug mode;
 you may additionally pass `--release` to enable compiler optimisations.
 
 **TODO:** proper client programs (in python?)
@@ -68,11 +68,23 @@ for more details.
 ## Configuration
 
 Currently the server allows some very simple configuration
-via command-line parameters. 
+via command-line parameters.
 You may explore the available options using
 ```sh
 cargo run -- --help
 ```
 
-Note the initial `--` required to separate 
+Note the initial `--` required to separate
 arguments to `cargo` from arguments to the server.
+
+In particular, you may specify a JSON-encoded configuration file
+to specify gameplay parameters.
+Use
+```sh
+cargo run -- -d config.json
+```
+to create or update a config file from the default configuration, and
+```sh
+cargo run -- config.json
+```
+to load it when running.

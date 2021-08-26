@@ -25,13 +25,13 @@ use warp::{ws::Message, Filter};
     setting(AppSettings::DeriveDisplayOrder)
 )]
 struct Opts {
-    /// Path to a config file with game parameters.
-    #[structopt(short, long, parse(from_os_str), value_name = "FILE")]
-    config: Option<PathBuf>,
+    /// Path to a config file with game parameters to load.
+    #[structopt(parse(from_os_str))]
+    config_file: Option<PathBuf>,
 
-    /// Dump all currently active config options to the given file, overwriting it.
-    #[structopt(short, long, parse(from_os_str), value_name = "FILE")]
-    dump_config: Option<PathBuf>,
+    /// Write missing options to the provided config file, creating it if it doesn't exist.
+    #[structopt(short, long, requires("config-file"))]
+    dump_config: bool,
 
     /// Address to bind the TCP listener.
     #[structopt(short, long, default_value = "127.0.0.1:49998", value_name = "ADDRESS")]
@@ -50,13 +50,13 @@ async fn main() -> Result<()> {
         .init();
 
     let Opts {
-        config,
+        config_file,
         dump_config,
         tcp_addr,
         web_addr,
     } = Opts::from_args();
 
-    let config = config.map_or_else(
+    let config = config_file.as_ref().map_or_else(
         || Ok(game::Config::default()),
         |path| {
             // using std (blocking) types is OK here, as we have not started any async work
@@ -66,9 +66,10 @@ async fn main() -> Result<()> {
     );
     let config = config?;
 
-    if let Some(path) = dump_config {
-        let file = File::create(&path).context("Could not create config dump file")?;
-        serde_json::to_writer_pretty(file, &config).context("Could not write config file")?;
+    if dump_config {
+        let path = config_file.expect("config-file is required by -d");
+        let output = File::create(&path).context("Could not create specified config file")?;
+        serde_json::to_writer_pretty(output, &config).context("Could not write to config file")?;
         let path = path.to_string_lossy();
         println!("Dumped current configuration options to {}", path);
         return Ok(());
