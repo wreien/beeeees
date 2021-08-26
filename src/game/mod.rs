@@ -6,7 +6,7 @@
 //! providing any relevant user input, which advances the game by one turn.
 //!
 //! To create a [`State`] you need to provide two pieces of information:
-//! a [world][world::World] with the tileset for this game,
+//! a [world][`world::World`] with the tileset for this game,
 //! and some [configuration][Config] to set up various parameters for the game.
 //! See their documentation for more information.
 //!
@@ -119,13 +119,17 @@ impl Default for Config {
     }
 }
 
+/// Deserialise a floating-point "probability".
+///
+/// This is the same as `f64::deserialize`, except that
+/// it returns an error if the value does not fall into `[0.0, 1.0]`.
 fn deserialize_chance<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
     let v = f64::deserialize(deserializer)?;
     if (0.0..=1.0).contains(&v) {
         Ok(v)
     } else {
         use serde::de::{Error, Unexpected};
-        let msg = &"a float in range [0, 1]";
+        let msg = &"a float in range [0.0, 1.0]";
         Err(Error::invalid_value(Unexpected::Float(v), msg))
     }
 }
@@ -260,28 +264,9 @@ impl State {
     /// of serialising the returned object.
     ///
     /// The returned object is safe to send across threads.
-    ///
-    /// If you want to serialize the current state of the game straight away,
-    /// and don't require this extra functionality,
-    /// consider using [`serialize`][State::serialize] instead.
     #[must_use]
     pub fn make_serializer(&self) -> Serializer {
         Serializer(Arc::new(self.entities.clone()))
-    }
-
-    /// Get a dependent serialisable view of the current state of the game.
-    ///
-    /// The returned serializer only represents
-    /// the mutable members of the game.
-    /// This only borrows the existing game state,
-    /// and must be used straight away.
-    ///
-    /// If you need to cache the current state to serialise later,
-    /// possibly on different threads,
-    /// consider using [`make_serializer`][State::make_serializer] instead.
-    #[must_use]
-    pub fn serialize(&self) -> impl Serialize + '_ {
-        &self.entities
     }
 
     /// Add a player to the game, starting them with a hive and some bees.

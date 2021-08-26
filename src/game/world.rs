@@ -242,10 +242,14 @@ impl Default for World {
     }
 }
 
+/// Intermediary type used to deserialise a [`World`], handling any errors.
 #[derive(Deserialize)]
 struct WorldDeserializer {
+    /// See [`World::width`].
     width: i32,
+    /// See [`World::height`].
     height: i32,
+    /// See [`World::map`].
     map: Vec<Tile>,
 }
 

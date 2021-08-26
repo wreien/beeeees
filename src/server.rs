@@ -270,7 +270,7 @@ async fn play_game(
 ///
 /// Returns a receiver to be used to monitor any updates to the game state.
 ///
-/// The `player` can be an [observer][Player::observer];
+/// The `player` can be an [observer][`Player::observer`];
 /// in that case the player is not added to the game,
 /// but we still subscribe to the receiver.
 async fn register<S, E>(

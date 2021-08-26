@@ -1,4 +1,40 @@
+//! A coöperative multiplayer network-based game,
+//! where players must control swarms of bees to collect as much pollen as possible.
+//!
+//! Developed for Reboot 2021.
+//!
+//! ## Configuration
+//!
+//! Configuration is managed via a combination of
+//! command-line arguments for the works of the server as a whole, and
+//! a configuration file defining the rules and environment for the game.
+//!
+//! Command-line arguments are specified by the [`Opts`] structure,
+//! and its documentation can be viewed by running `./beeeees --help`.
+//!
+//! Game configuration is serialised to and from a [`game::Config`] instance.
+//!
+//! ## Code layout
+//!
+//! The root module collects and parses command-line arguments,
+//! reads any config files (if appropriate),
+//! and creates and runs the game server,
+//! as well as a TCP communication port and a website interface.
+//!
+//! Structures used for processing and running the game itself
+//! can be found in the [`game`] module.
+//! All game logic is defined and controlled here.
+//!
+//! The communication protocols, as well as the game server,
+//! are defined in the [`server`] module.
+//!
+//! ## Logging
+//!
+//! The server uses [`env_logger`] to manage logs;
+//! refer to its documentation for details on this works.
+
 #![allow(dead_code)]
+#![allow(rustdoc::private_intra_doc_links)]
 
 mod game;
 mod server;
@@ -6,7 +42,7 @@ mod server;
 use std::{fs::File, io::BufReader, net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
-use futures::{future, Future, SinkExt, TryStreamExt};
+use futures::{future, SinkExt, TryStreamExt};
 use log::{debug, error, info};
 use structopt::{clap::AppSettings, StructOpt};
 use tokio::{net::TcpListener, signal};
@@ -101,6 +137,10 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Create a TCP server hosted at the given address.
+///
+/// Clients are initialized using the provided `client_info`.
+/// Runs until it receives a shutdown signal over `client_info`.
 async fn make_tcp_server(addr: SocketAddr, client_info: server::ClientState) {
     let tcp_listener = TcpListener::bind(addr)
         .await
@@ -126,7 +166,16 @@ async fn make_tcp_server(addr: SocketAddr, client_info: server::ClientState) {
     debug!("TCP server shutting down");
 }
 
-fn make_web_server(addr: SocketAddr, client_info: server::ClientState) -> impl Future<Output = ()> {
+/// Create a web server hosted at the given address.
+///
+/// This serves the website used to observer the game,
+/// and provides the websocket interface.
+/// Clients are initialized using the provided `client_info`.
+/// Server runs until it receives a shutdown signal over `client_info`.
+///
+/// The served files should be accessible from a folder `./website`,
+/// relative to the program's current directory.
+async fn make_web_server(addr: SocketAddr, client_info: server::ClientState) {
     let mut signal = client_info.get_shutdown_notifier();
 
     let to_websocket = warp::addr::remote()
@@ -171,5 +220,5 @@ fn make_web_server(addr: SocketAddr, client_info: server::ClientState) -> impl F
         debug!("Web server shutting down");
     });
 
-    server
+    server.await;
 }
