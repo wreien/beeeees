@@ -70,7 +70,7 @@ impl Tile {
     /// Whether this tile can be passed through by bees.
     #[must_use]
     pub fn is_passable(self) -> bool {
-        matches!(self, Self::Block)
+        !matches!(self, Self::Block)
     }
 
     /// The weighting for how likely flowers are to spawn on this tile.
