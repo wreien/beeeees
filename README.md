@@ -11,6 +11,16 @@ and still needs a lot of work to be functional.
 
 ## Getting Started
 
+There are two halves that are required to run the game.
+One is the _server_,
+which manages the game as a whole
+and creates the website you can use to view the current state.
+The other is the _client program_,
+which receives information from the server
+and responds with moves for each player's bee.
+
+### Server
+
 To compile the server, you will need to download
 the [Rust](https://www.rust-lang.org/) programming language.
 I recommend using [rustup](https://rustup.rs/).
@@ -24,7 +34,7 @@ cargo run
 ```
 
 When running, the server hosts a very simple website frontend on your machine.
-By default you may access it by navigating to http://127.0.0.1:8080/.
+By default you may access it by navigating to <http://127.0.0.1:8080/>.
 
 There is also a very rudimentary "echo" client
 you can use to interact with the server.
@@ -36,7 +46,10 @@ cargo run --bin echo
 The above will run in debug mode;
 you may additionally pass `--release` to enable compiler optimisations.
 
-**TODO:** proper client programs (in python?)
+### Client
+
+Example clients are available in the [`clients/` directory](clients/).
+See the README there for more information on running them.
 
 ## Documentation
 
