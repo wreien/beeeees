@@ -84,6 +84,7 @@ Fields:
     - `"player"`: The owner of the spawner.
     - `"position"`: The location of the hive.
   - `"flowers"`: A list of flowers. Each element is an object with:
+    - `"id"`: A unique integer denoting the flower's identifier.
     - `"pollen"`: An integer, the amount of pollen that can still be collected.
     - `"is_pollinated"`: A boolean, whether this flower is pollinated or not.
     - `"position"`: The location of the flower.

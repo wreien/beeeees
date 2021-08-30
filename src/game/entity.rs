@@ -21,8 +21,8 @@ pub struct BeeID(usize);
 impl BeeID {
     /// Create a new bee identifier.
     ///
-    /// The generated player will have a unique ID for this execution of the application.
-    /// Note that IDs generated will be duplicated across different executions.
+    /// The generated ID will be unique for this execution of the application.
+    /// Note that IDs will be duplicated across different executions.
     #[must_use]
     pub fn new() -> Self {
         static BEE_COUNTER: AtomicUsize = AtomicUsize::new(1);
@@ -59,9 +59,9 @@ pub struct Bee {
     pub pollen: i32,
     /// The amount of energy the bee has left to live.
     pub energy: i32,
-    /// Where the last flower the bee collected pollen from was.
+    /// The last flower the bee collected pollen from was.
     #[serde(skip)]
-    pub last_flower: Option<Position>,
+    pub last_flower: Option<FlowerID>,
 }
 
 impl Bee {
@@ -107,15 +107,14 @@ impl Bee {
     pub fn transfer_pollen(&mut self, flowers: &mut [Flower]) {
         let on_living_flower = |f: &&mut Flower| f.position == self.position && f.pollen > 0;
         if let Some(flower) = flowers.iter_mut().find(on_living_flower) {
-            // TODO: handle another flower respawning right here?
-            let here = Some(flower.position);
-            if self.pollen > 0 && !flower.is_pollinated && self.last_flower != here {
+            let this = Some(flower.id);
+            if self.pollen > 0 && !flower.is_pollinated && self.last_flower != this {
                 self.pollen -= 1;
                 flower.is_pollinated = true;
             } else {
                 flower.pollen -= 1;
                 self.pollen += 1;
-                self.last_flower = here;
+                self.last_flower = this;
             }
         }
     }
@@ -185,6 +184,24 @@ impl Hive {
     }
 }
 
+/// Uniquely identifies a flower.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct FlowerID(usize);
+
+impl FlowerID {
+    /// Create a new flower identifier.
+    ///
+    /// The generated ID will be unique for this execution of the application.
+    /// Note that IDs will be duplicated across different executions.
+    #[must_use]
+    pub fn new() -> Self {
+        static FLOWER_COUNTER: AtomicUsize = AtomicUsize::new(1);
+        let id = FLOWER_COUNTER.fetch_add(1, Ordering::Relaxed);
+        FlowerID(id)
+    }
+}
+
 /// A flower which can be visited to collect pollen.
 ///
 /// When it runs out of pollen, the flower "dies".
@@ -192,6 +209,8 @@ impl Hive {
 /// it will spawn a new flower nearby.
 #[derive(Debug, Clone, Serialize)]
 pub struct Flower {
+    /// Uniquely identifies a flower.
+    pub id: FlowerID,
     /// The location of the flower on the map.
     pub position: Position,
     /// How much pollen the flower has remaining.
@@ -205,6 +224,7 @@ impl Flower {
     #[must_use]
     pub fn new(position: Position, pollen: i32) -> Self {
         Self {
+            id: FlowerID::new(),
             position,
             pollen,
             is_pollinated: false,
