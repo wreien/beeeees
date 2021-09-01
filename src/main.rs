@@ -42,11 +42,11 @@ mod server;
 use std::{fs::File, io::BufReader, net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
-use futures::{future, SinkExt, TryStreamExt};
+use futures::{future, Sink, SinkExt, Stream, TryStreamExt};
 use log::{debug, error, info};
 use structopt::{clap::AppSettings, StructOpt};
 use tokio::{net::TcpListener, signal};
-use tokio_util::codec::{Decoder, LinesCodec};
+use tokio_util::codec::{Decoder, LinesCodec, LinesCodecError};
 use warp::{ws::Message, Filter};
 
 /// Simple bees game.
@@ -154,6 +154,8 @@ async fn make_tcp_server(addr: SocketAddr, client_info: server::ClientState) {
         };
 
         let socket = LinesCodec::new_with_max_length(8192).framed(socket);
+        let socket = use_json_protocol(socket);
+
         let channels = client_info.clone();
         tokio::spawn(async move {
             info!("Handling new connection with address {}", addr);
@@ -178,19 +180,25 @@ async fn make_tcp_server(addr: SocketAddr, client_info: server::ClientState) {
 async fn make_web_server(addr: SocketAddr, client_info: server::ClientState) {
     let mut signal = client_info.get_shutdown_notifier();
 
+    // transform a WebSocket into a stream matching the protocol
+    let prepare = |socket: warp::ws::WebSocket| {
+        let socket = socket
+            .try_take_while(|msg| future::ok(!msg.is_close()))
+            .try_filter_map(|msg| future::ok(msg.to_str().map(String::from).ok()))
+            .with(|s| future::ok(Message::text(s)));
+        use_json_protocol(socket)
+    };
+
     let to_websocket = warp::addr::remote()
         .map(|addr: Option<SocketAddr>| addr.expect("no socket address available"))
         .and(warp::ws())
         .and(warp::any().map(move || client_info.clone()));
 
     let play = warp::path("play").and(to_websocket.clone()).map(
-        |addr: SocketAddr, ws: warp::ws::Ws, channels| {
+        move |addr: SocketAddr, ws: warp::ws::Ws, channels| {
             ws.on_upgrade(move |socket| async move {
                 tokio::spawn(async move {
-                    let socket = socket
-                        .try_take_while(|msg| future::ok(!msg.is_close()))
-                        .try_filter_map(|msg| future::ok(msg.to_str().ok().map(String::from)))
-                        .with(|s: String| future::ok::<_, warp::Error>(Message::text(s)));
+                    let socket = prepare(socket);
                     if let Err(x) = server::handle_player(socket, addr, channels).await {
                         error!("When handling ws://./play for {}: {:?}", addr, x);
                     }
@@ -200,11 +208,10 @@ async fn make_web_server(addr: SocketAddr, client_info: server::ClientState) {
     );
 
     let observe = warp::path("observe").and(to_websocket).map(
-        |addr: SocketAddr, ws: warp::ws::Ws, channels| {
+        move |addr: SocketAddr, ws: warp::ws::Ws, channels| {
             ws.on_upgrade(move |socket| async move {
                 tokio::spawn(async move {
-                    let socket =
-                        socket.with(|s: String| future::ok::<_, warp::Error>(Message::text(s)));
+                    let socket = prepare(socket);
                     if let Err(x) = server::handle_observer(socket, addr, channels).await {
                         error!("When handling ws://./observe for {}: {:?}", addr, x);
                     }
@@ -221,4 +228,71 @@ async fn make_web_server(addr: SocketAddr, client_info: server::ClientState) {
     });
 
     server.await;
+}
+
+#[derive(Debug)]
+enum Error {
+    CodecError(LinesCodecError),
+    SerdeError(serde_json::Error),
+    WarpError(warp::Error),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Error::CodecError(ref err) => write!(f, "codec error: {}", err),
+            Error::SerdeError(ref err) => write!(f, "serde error: {}", err),
+            Error::WarpError(ref err) => write!(f, "warp error: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(match *self {
+            Error::CodecError(ref err) => err,
+            Error::SerdeError(ref err) => err,
+            Error::WarpError(ref err) => err,
+        })
+    }
+}
+
+impl From<LinesCodecError> for Error {
+    fn from(err: LinesCodecError) -> Self {
+        Self::CodecError(err)
+    }
+}
+
+impl From<warp::Error> for Error {
+    fn from(err: warp::Error) -> Self {
+        Self::WarpError(err)
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(err: serde_json::Error) -> Self {
+        Self::SerdeError(err)
+    }
+}
+
+fn use_json_protocol<S, E>(
+    socket: S,
+) -> impl Stream<Item = Result<server::protocol::Receive, Error>>
+       + Sink<server::protocol::Send, Error = Error>
+       + Unpin
+where
+    S: Stream<Item = Result<String, E>> + Sink<String, Error = E> + Unpin,
+    E: Into<Error>,
+{
+    use server::protocol::{Receive as R, Send as S};
+    socket
+        .err_into::<Error>()
+        .sink_err_into::<Error>()
+        .and_then(|line| {
+            future::ready(serde_json::from_str::<R>(&line).map_err(|e| {
+                debug!("Couldn't parse {} as Receive: {}", line, e);
+                Error::from(e)
+            }))
+        })
+        .with(|s: S| future::ready(serde_json::to_string(&s).map_err(Error::from)))
 }

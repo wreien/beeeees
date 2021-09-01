@@ -53,11 +53,11 @@ Example:
 ```json
 {
   "type": "registration",
-  "player_id": 4,
+  "player_id": 1,
   "world": {
-    "height": 4,
-    "width": 4,
-    "map": ["Grass", "Grass", "Garden", "Neutral", /* ... 12 more */]
+    "height": 2,
+    "width": 2,
+    "map": ["Grass", "SpawnPoint", "Garden", "Neutral"]
   }
 }
 ```
@@ -91,7 +91,7 @@ Fields:
   - `"birds"`: *TODO*.
   - `"cars"`: *TODO*.
 
-Example:
+Example with one bee, hive, and flower:
 
 ```json
 {
@@ -107,8 +107,7 @@ Example:
           "x": 7,
           "y": 3
         }
-      },
-      // ...
+      }
     ],
     "hives": [
       {
@@ -117,8 +116,7 @@ Example:
           "x": 5,
           "y": 5
         }
-      },
-      // ...
+      }
     ],
     "flowers": [
       {
@@ -128,8 +126,7 @@ Example:
           "x": 7,
           "y": 3
         }
-      },
-      // ...
+      }
     ],
     "birds": [],
     "cars": [],
@@ -190,13 +187,36 @@ Example:
 
 ## Client to Server
 
-At this stage, the only message sent by the client are actions.
-This is a list of movements for each bee controlled by the client.
-All entries should be less than 8192 characters long;
+All messages should be in lines of less than 8192 characters long;
 longer transmissions will be rejected by the server.
 
-Each message should be a list of objects,
-where each object has the following two fields:
+There are two kinds of message that can be sent by the client.
+Like with the Server to Client messages,
+the message type is determined by a `"type"` field in the JSON packet.
+
+### `"register"`
+
+This should be the first message sent by the client to the server.
+This registers the player with the game, and passes any relevant metadata.
+Currently the only relevant data is the player's name:
+this should be unique, and is used to allow reconnection to an existing session
+if the player disconnects for whatever reason.
+
+Example:
+
+```json
+{
+  "type": "register",
+  "name": "Jim"
+}
+```
+
+### `"moves"`
+
+After the initial registration is complete,
+the only messages that should be sent are bee movements.
+For this packet type, the only other field is `"moves"`,
+referring to an array where each subobject has the following two fields:
 
 - `"bee"`: an integer identifying the bee to move.
 - `"direction"`: what direction to move the bee.
@@ -210,15 +230,19 @@ followed by `[{"bee":1,"direction":"South"}]`
 will cause the denoted bee to move southwards for this game tick.
 Any bees without an action provided for this tick
 will not move anywhere;
-this is equivalent to specifying `"direction": null` for the bee in question.
+this is equivalent to specifying `"direction": null` for the bee in question
+(or simply not specifying a direction at all).
 
 Example:
 
 ```json
-[
-  { "bee": 1, "direction": "North" },
-  { "bee": 2, "direction": "West" },
-  { "bee": 5, "direction": null },
-  { "bee": 7 }  // same as specifying `"direction": null`.
-]
+{
+  "type": "moves",
+  "moves": [
+    { "bee": 1, "direction": "North" },
+    { "bee": 2, "direction": "West" },
+    { "bee": 5, "direction": null },
+    { "bee": 7 }
+  ]
+}
 ```
