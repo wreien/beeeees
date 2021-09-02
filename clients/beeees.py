@@ -191,6 +191,14 @@ class Connection(object):
         self.writer.write(b"\n")
         await self.writer.drain()
 
+    async def write_json(self, data) -> None:
+        """Write a blob as JSON-encoded data to the connection.
+
+        Uses the same encoding and flushing behaviour as `write`.
+        """
+        print(f"Sending: {data}")
+        await self.write(json.dumps(data, separators=(",", ":")))
+
     async def read(self) -> str:
         """Read a message from the connection.
 
@@ -231,7 +239,7 @@ class Client(object):
         self = cls()
         self.conn = conn
 
-        await self.conn.write(name)
+        await self.conn.write_json({"type": "register", "name": name})
         msg = await self.conn.read()
         packet = json.loads(msg)
         if packet["type"] == "done":
@@ -267,9 +275,13 @@ class Client(object):
             elif packet["type"] == "update":
                 entities = Entities(packet["data"])
                 moves = step(self.id, self.world, entities)
-                l = list({"bee": k, "direction": v} for (k, v) in moves.items())
-                print(f"Sending: {l}")
-                await self.conn.write(json.dumps(l, separators=(",", ":")))
+                data = {
+                    "type": "moves",
+                    "moves": list(
+                        {"bee": k, "direction": v} for (k, v) in moves.items()
+                    ),
+                }
+                await self.conn.write_json(data)
             else:
                 raise Error(f"unknown message: {msg}")
 
@@ -310,8 +322,11 @@ def play(name: str, host: str, port: Union[int, str], step: StepFunc) -> None:
         except Error as e:
             print(f"Fatal error: {e.message}")
 
-    if platform.system() == "Windows":
-        # just don't handle Proactor always throwing exception on teardown
-        asyncio.get_event_loop().run_until_complete(main())
-    else:
-        asyncio.run(main())
+    try:
+        if platform.system() == "Windows":
+            # just don't handle Proactor always throwing exception on teardown
+            asyncio.get_event_loop().run_until_complete(main())
+        else:
+            asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Interrupted.")
