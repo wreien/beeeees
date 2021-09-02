@@ -230,69 +230,73 @@ async fn make_web_server(addr: SocketAddr, client_info: server::ClientState) {
     server.await;
 }
 
+/// Error type used to combine many kinds of protocol errors.
+///
+/// Just forwards implementations to the stored error.
+/// Used by [`use_json_protocol`] to erase the type of
+/// the stream's errors.
 #[derive(Debug)]
-enum Error {
-    CodecError(LinesCodecError),
-    SerdeError(serde_json::Error),
-    WarpError(warp::Error),
+enum ProtocolError {
+    Codec(LinesCodecError),
+    Serde(serde_json::Error),
+    Warp(warp::Error),
 }
 
-impl std::fmt::Display for Error {
+impl std::fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
-            Error::CodecError(ref err) => write!(f, "codec error: {}", err),
-            Error::SerdeError(ref err) => write!(f, "serde error: {}", err),
-            Error::WarpError(ref err) => write!(f, "warp error: {}", err),
+        match self {
+            ProtocolError::Codec(ref err) => err.fmt(f),
+            ProtocolError::Serde(ref err) => err.fmt(f),
+            ProtocolError::Warp(ref err) => err.fmt(f),
         }
     }
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(match *self {
-            Error::CodecError(ref err) => err,
-            Error::SerdeError(ref err) => err,
-            Error::WarpError(ref err) => err,
-        })
-    }
-}
+impl std::error::Error for ProtocolError {}
 
-impl From<LinesCodecError> for Error {
+impl From<LinesCodecError> for ProtocolError {
     fn from(err: LinesCodecError) -> Self {
-        Self::CodecError(err)
+        Self::Codec(err)
     }
 }
 
-impl From<warp::Error> for Error {
+impl From<warp::Error> for ProtocolError {
     fn from(err: warp::Error) -> Self {
-        Self::WarpError(err)
+        Self::Warp(err)
     }
 }
 
-impl From<serde_json::Error> for Error {
+impl From<serde_json::Error> for ProtocolError {
     fn from(err: serde_json::Error) -> Self {
-        Self::SerdeError(err)
+        Self::Serde(err)
     }
 }
 
+/// Convert a stream over [`String`] into
+/// a stream over [`server::protocol`] types,
+/// using [`serde_json`] as a serializer/deserializer.
+///
+/// This allows the stream to be used as the parameter
+/// to functions like [`server::handle_player`].
+///
+/// Errors are coerced to [`ProtocolError`] for consistency.
 fn use_json_protocol<S, E>(
     socket: S,
-) -> impl Stream<Item = Result<server::protocol::Receive, Error>>
-       + Sink<server::protocol::Send, Error = Error>
+) -> impl Stream<Item = Result<server::protocol::Receive, ProtocolError>>
+       + Sink<server::protocol::Send, Error = ProtocolError>
        + Unpin
 where
     S: Stream<Item = Result<String, E>> + Sink<String, Error = E> + Unpin,
-    E: Into<Error>,
+    E: Into<ProtocolError>,
 {
-    use server::protocol::{Receive as R, Send as S};
     socket
-        .err_into::<Error>()
-        .sink_err_into::<Error>()
+        .err_into()
+        .sink_err_into()
         .and_then(|line| {
-            future::ready(serde_json::from_str::<R>(&line).map_err(|e| {
-                debug!("Couldn't parse {} as Receive: {}", line, e);
-                Error::from(e)
+            future::ready(serde_json::from_str(&line).map_err(|e| {
+                debug!("Couldn't parse {}: {}", line, e);
+                ProtocolError::from(e)
             }))
         })
-        .with(|s: S| future::ready(serde_json::to_string(&s).map_err(Error::from)))
+        .with(|s| future::ready(serde_json::to_string(&s).map_err(ProtocolError::from)))
 }
