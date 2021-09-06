@@ -46,15 +46,19 @@ function init(new_world, new_tick_rate) {
   ticks_per_update = (new_tick_rate * 1000) / tick_length;
 }
 
-function make_ellipse(a, b, initial_t) {
+function make_ellipse(a, b, initial_t, t_step) {
   return {
     t: initial_t,
+    d: t_step,
     x: 0.0,
     y: 0.0,
-    update: function (new_t) {
-      this.t = new_t;
-      this.x = a * Math.cos(new_t);
-      this.y = b * Math.sin(new_t);
+    update: function (p) {
+      this.t += this.d * p;
+      if (this.t > 2 * Math.PI) {
+        this.t -= 2 * Math.PI;
+      }
+      this.x = a * world.tile_size * Math.cos(this.t);
+      this.y = b * world.tile_size * Math.sin(this.t);
     },
   };
 }
@@ -81,9 +85,10 @@ function update(data) {
     if (!bees.has(b.id)) {
       const radius = (0.1 + 0.05 * Math.random()) * world.tile_size;
       const jitter = make_ellipse(
-        Math.random() * 0.35 * world.tile_size,
-        Math.random() * 0.35 * world.tile_size,
+        Math.random() * 0.3 + 0.05,
+        Math.random() * 0.3 + 0.05,
         Math.random() * 2 * Math.PI,
+        (Math.random() + 1) * (Math.random() > 0.5 ? 1 : -1) * Math.PI,
       );
       const colour = players.data.get(b.player).colour;
       bees.set(b.id, { curr: Object.assign({ radius, jitter, colour }, b), next: b });
@@ -121,26 +126,22 @@ function animate(num_ticks) {
     if (b.next === null) {
       m.delete(k);
     } else {
-      const average_rps = 0.5 * Math.PI * time_step;
-      const t_step = (Math.random() + 0.5) * average_rps;
-      let next_t = b.curr.jitter.t + t_step;
-      if (next_t > 2 * Math.PI) {
-        next_t -= 2 * Math.PI;
-      }
-      b.curr.jitter.update(next_t);
+      b.curr.jitter.update(update_step);
 
       const cp = b.curr.position;
       const np = b.next.position;
-      if (cp.x < np.x) {
-        cp.x = Math.min(np.x, cp.x + update_step);
-      } else if (cp.x > np.x) {
-        cp.x = Math.max(np.x, cp.x - update_step);
+      const off = update_step / 2;
+
+      if (cp.x < np.x - off) {
+        cp.x += update_step;
+      } else if (cp.x > np.x + off) {
+        cp.x -= update_step;
       }
 
-      if (cp.y < np.y) {
-        cp.y = Math.min(np.y, cp.y + update_step);
-      } else if (cp.y > np.y) {
-        cp.y = Math.max(np.y, cp.y - update_step);
+      if (cp.y <= np.y - off) {
+        cp.y += update_step;
+      } else if (cp.y >= np.y + off) {
+        cp.y -= update_step
       }
     }
   });
