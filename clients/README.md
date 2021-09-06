@@ -14,11 +14,13 @@ _Note: currently only tested with Python 3.9..._
 
 The current available examples are:
 
-| Example        | Description                                   |
-| -------------- | --------------------------------------------- |
-| [eg_random][1] | Bees walk completely randomly around the map. |
+| Example         | Description                                   |
+| --------------- | --------------------------------------------- |
+| [eg_random][1]  | Bees walk completely randomly around the map. |
+| [eg_nearest][2] | Bees walk directly towards nearest flower.    |
 
 [1]: eg_random.py
+[2]: eg_nearest.py
 
 ## Writing your own clients
 
