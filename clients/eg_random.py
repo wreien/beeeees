@@ -9,10 +9,10 @@ SERVER_PORT = 49998
 
 
 def move_randomly(player: PlayerID, world: World, entities: Entities) -> Moves:
+    """Move all bees randomly."""
     result: Moves = {}
-    for bee in entities.bees:
-        if bee.player == player:
-            result[bee.id] = random.choice(["North", "South", "East", "West"])
+    for bee in entities.bees_for(player):
+        result[bee.id] = random.choice(["North", "South", "East", "West"])
     return result
 
 

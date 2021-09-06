@@ -3,14 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import platform
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from enum import Enum, auto
 from typing import Union, Iterator, Literal, Callable, NewType
 
 
 BeeID = NewType("BeeID", int)
 PlayerID = NewType("PlayerID", int)
-Direction = Literal["North", "East", "South", "West"]
+Direction = Union[Literal["North", "East", "South", "West"], None]
 Position = tuple[int, int]
 
 
@@ -138,6 +138,16 @@ class Entities(object):
         self.bees = [Bee(b) for b in data["bees"]]
         self.flowers = [Flower(f) for f in data["flowers"]]
         self.hives = [Hive(h) for h in data["hives"]]
+
+    def bees_for(self, player: PlayerID) -> Iterable[Bee]:
+        """Get an iterable of bees, filtered for just the given player."""
+        for bee in self.bees:
+            if bee.player == player:
+                yield bee
+
+    def hive_for(self, player: PlayerID) -> Hive:
+        """Get the hive (spawn point) for the given player."""
+        return next(h for h in self.hives if h.player == player)
 
 
 class Error(Exception):
