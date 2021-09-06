@@ -25,9 +25,9 @@ const players = {
 const bees = new Map();    // ID -> bee data
 const flowers = new Map(); // ID -> flower data
 
-let last_tick = null;
-let tick_length = null;
-let ticks_per_update = null;
+let last_tick = null;         // when the last tick occurred (ms)
+let tick_length = null;       // number of milliseconds between ticks
+let ticks_per_update = null;  // expected number of ticks between each game update
 
 function resize() {
   const th = canvas.height / world.height;
@@ -35,7 +35,7 @@ function resize() {
   world.tile_size = Math.min(th, tw);
 }
 
-function init(new_world) {
+function init(new_world, new_tick_rate) {
   Object.assign(world, new_world);
   resize();
 
@@ -43,7 +43,7 @@ function init(new_world) {
   players.data.clear();
 
   tick_length = 20;  // 50Hz
-  ticks_per_update = 2000 / tick_length;
+  ticks_per_update = (new_tick_rate * 1000) / tick_length;
 }
 
 function make_ellipse(a, b, initial_t) {
@@ -236,7 +236,7 @@ websocket.onmessage = e => {
   const packet = JSON.parse(e.data);
   switch (packet.type) {
     case 'registration':
-      init(packet.world);
+      init(packet.world, packet.tick_rate);
       break;
     case 'update':
       update(packet.data);

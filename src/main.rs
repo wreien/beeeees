@@ -58,7 +58,7 @@ use warp::{ws::Message, Filter};
     name = "beeeees",
     version_short = "v",
     setting(AppSettings::UnifiedHelpMessage),
-    setting(AppSettings::DeriveDisplayOrder)
+    setting(AppSettings::DeriveDisplayOrder),
 )]
 struct Opts {
     /// Path to a config file with game parameters to load.
@@ -68,6 +68,16 @@ struct Opts {
     /// Write missing options to the provided config file, creating it if it doesn't exist.
     #[structopt(short, long, requires("config-file"))]
     dump_config: bool,
+
+    /// The number of seconds to spend on each game tick.
+    #[structopt(
+        short = "r",
+        long,
+        default_value = "2.0",
+        value_name = "SECONDS",
+        parse(try_from_str = str_to_duration),
+    )]
+    tick_rate: Duration,
 
     /// Address to bind the TCP listener.
     #[structopt(short, long, default_value = "127.0.0.1:49998", value_name = "ADDRESS")]
@@ -88,6 +98,7 @@ async fn main() -> Result<()> {
     let Opts {
         config_file,
         dump_config,
+        tick_rate,
         tcp_addr,
         web_addr,
     } = Opts::from_args();
@@ -112,8 +123,6 @@ async fn main() -> Result<()> {
     }
 
     let state = game::State::new(config);
-    let tick_rate = Duration::from_secs(2);
-
     let game_server = server::make_game_server(state, tick_rate);
     tokio::spawn(game_server.server);
 
@@ -135,6 +144,12 @@ async fn main() -> Result<()> {
     tcpserver.await?;
 
     Ok(())
+}
+
+/// Convert a string into a duration.
+fn str_to_duration(s: &str) -> Result<Duration, std::num::ParseFloatError> {
+    let secs = s.parse()?;
+    Ok(Duration::from_secs_f64(secs))
 }
 
 /// Create a TCP server hosted at the given address.

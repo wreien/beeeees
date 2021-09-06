@@ -1,4 +1,6 @@
-use std::sync::Arc;
+//! Defines the structures used for the server's communication protocol.
+
+use std::{sync::Arc, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
@@ -6,6 +8,14 @@ use crate::game::{
     self,
     world::{Direction, World},
 };
+
+/// Serialize a duration as a single [`f64`] representing the number of seconds.
+fn serialize_duration_as_f64<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    duration.as_secs_f64().serialize(serializer)
+}
 
 /// Messages sent from the server.
 #[derive(Debug, Serialize)]
@@ -19,6 +29,9 @@ pub enum Send {
         world: Arc<World>,
         /// A unique integer denoting the client's identifier.
         player: game::Player,
+        /// The expected tick rate of the server.
+        #[serde(serialize_with = "serialize_duration_as_f64")]
+        tick_rate: Duration,
     },
     /// Sent regularly, providing an updated view of the current game state.
     ///

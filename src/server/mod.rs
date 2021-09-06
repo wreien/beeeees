@@ -137,11 +137,19 @@ pub fn make_game_server(
 }
 
 /// The information passed back by the game on successful creation.
-pub type GameEventResponse = (broadcast::Receiver<game::Serializer>, Arc<World>);
+#[derive(Debug)]
+struct GameEventResponse {
+    /// The receive end of a stream receiving game updates.
+    updates: broadcast::Receiver<game::Serializer>,
+    /// The world map.
+    world: Arc<World>,
+    /// The expected tick rate of the game.
+    tick_rate: Duration,
+}
 
 /// An event to be passed to the active game.
 #[derive(Debug)]
-pub enum GameEvent {
+enum GameEvent {
     /// Add a player or observer to the game.
     ///
     /// Also used for reconnecting players who have previously disconnected.
@@ -206,6 +214,12 @@ async fn play_game(
     let (updates, _) = broadcast::channel(1);
     let world = Arc::new(state.world().clone());
 
+    let make_response = |_| GameEventResponse {
+        updates: updates.subscribe(),
+        world: world.clone(),
+        tick_rate,
+    };
+
     loop {
         tokio::select! {
             // handle any events sent in
@@ -223,8 +237,7 @@ async fn play_game(
                             }
                         })
                     };
-                    let get_data = |_| (updates.subscribe(), world.clone());
-                    response.send(result.map(get_data)).unwrap();
+                    response.send(result.map(make_response)).unwrap();
                 },
                 Some(GameEvent::Disconnect { player }) => {
                     debug!("Disconnecting {}", player);
@@ -291,9 +304,17 @@ where
     }
 
     match register_rx.await.map_err(|_| anyhow!(finished_msg)) {
-        Ok(Ok((updates, world))) => {
+        Ok(Ok(GameEventResponse {
+            updates,
+            world,
+            tick_rate,
+        })) => {
             info!("Registered {} as {}", addr, player);
-            let msg = protocol::Send::Registration { world, player };
+            let msg = protocol::Send::Registration {
+                world,
+                player,
+                tick_rate,
+            };
             sink.send(msg).await?;
             Ok(updates)
         }
